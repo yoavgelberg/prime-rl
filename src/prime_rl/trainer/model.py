@@ -346,6 +346,6 @@ def setup_model(config: ModelConfig, parallel_dims: ParallelDims) -> nn.Module:
 
 @jaxtyped(typechecker=typechecker)
 def forward(
-    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"]
+    model: nn.Module, input_ids: Int[Tensor, "batch seq"], position_ids: Int[Tensor, "batch seq"], **kwargs
 ) -> Float[Tensor, "batch seq vocab"]:
-    return model(input_ids=input_ids, position_ids=position_ids).logits
+    return model(input_ids=input_ids, position_ids=position_ids, **kwargs).logits
