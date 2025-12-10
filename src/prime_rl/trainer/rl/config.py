@@ -158,6 +158,20 @@ class RLTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    prefix_sliding: Annotated[
+        bool,
+        Field(
+            description="Slide with prefix + window.",
+        ),
+    ] = False
+
+    sw: Annotated[
+        int,
+        Field(
+            description="Window size if prefix sliding.",
+        ),
+    ] = 8192
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
