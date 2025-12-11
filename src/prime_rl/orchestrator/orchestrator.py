@@ -280,7 +280,7 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update and sample rollouts from the buffer
-        if config.rl.n_update is not None:
+        if config.n_update is not None:
             make_train_example = functools.partial(branch_rollout_n, n_update=config.rl.n_update)
         else:
             make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
