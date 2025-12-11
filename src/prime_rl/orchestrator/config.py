@@ -551,11 +551,11 @@ class OrchestratorConfig(BaseSettings):
     ] = None
 
     n_update: Annotated[
-        int,
+        int | None,
         Field(
             description="Sequence length to use for updating.",
         ),
-    ] = 8192
+    ] = None
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):
