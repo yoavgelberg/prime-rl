@@ -230,8 +230,8 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             kwargs = {}
-            if config.rl.prefix_sliding == True:
-                sw = config.rl.sw
+            if config.prefix_sliding == True:
+                sw = config.sw
                 # Create sliding window mask where every token can still attend to the prompt
                 from transformers.masking_utils import create_sliding_window_causal_mask
                 B, S = loss_mask.shape
