@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import random
 import time
 
@@ -279,7 +280,10 @@ async def orchestrate(config: OrchestratorConfig):
         )
 
         # Update and sample rollouts from the buffer
-        make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
+        if config.rl.n_update is not None:
+            make_train_example = functools.partial(branch_rollout_n, n_update=config.rl.n_update)
+        else:
+            make_train_example = interleave_rollout if config.trajectory_strategy == "interleaved" else branch_rollout
         train_examples: list[TrainingExample] = []
         for train_rollout, advantage in zip(train_rollouts, advantages):
             train_example = make_train_example(train_rollout)
