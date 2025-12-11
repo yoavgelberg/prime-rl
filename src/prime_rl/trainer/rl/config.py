@@ -172,6 +172,13 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 8192
 
+    n_update: Annotated[
+        int | None,
+        Field(
+            description="#tokens to update based on",
+        ),
+    ] = None    
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:
