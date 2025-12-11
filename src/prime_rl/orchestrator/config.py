@@ -550,6 +550,13 @@ class OrchestratorConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
+    n_update: Annotated[
+        int,
+        Field(
+            description="Sequence length to use for updating.",
+        ),
+    ] = 8192
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
