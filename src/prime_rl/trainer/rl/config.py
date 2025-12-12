@@ -158,19 +158,12 @@ class RLTrainerConfig(BaseSettings):
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
 
-    prefix_sliding: Annotated[
-        bool,
-        Field(
-            description="Slide with prefix + window.",
-        ),
-    ] = False
-
     sw: Annotated[
-        int,
+        int | None,
         Field(
             description="Window size if prefix sliding.",
         ),
-    ] = 8192
+    ] = None
 
     n_update: Annotated[
         int | None,
