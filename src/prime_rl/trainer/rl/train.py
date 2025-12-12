@@ -230,8 +230,8 @@ def train(config: RLTrainerConfig):
 
             # Forward pass
             kwargs = {}
-            if config.prefix_sliding == True:
-                sw = config.sw
+            if config.sw is not None:
+                import pdb; pdb.set_trace()
                 # Create sliding window mask where every token can still attend to the prompt
                 from transformers.masking_utils import create_sliding_window_causal_mask
                 B, S = loss_mask.shape
@@ -256,7 +256,7 @@ def train(config: RLTrainerConfig):
                 or_mask_fn = make_prompt_or_mask(prompt_mask_batch)
                 cache_position = torch.arange(model_inputs['input_ids'].shape[1], dtype=torch.long, device=attention_mask_batch.device)
                 conf = copy.copy(model.config)
-                setattr(conf, "sliding_window", sw)
+                setattr(conf, "sliding_window", config.sw)
                 setattr(conf, "use_sliding_window", True)
                 sliding_causal_mask = create_sliding_window_causal_mask(
                     config=conf,
