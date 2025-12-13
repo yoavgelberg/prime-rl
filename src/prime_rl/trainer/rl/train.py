@@ -232,7 +232,7 @@ def train(config: RLTrainerConfig):
             # Forward pass
             kwargs = {}
             if config.sw is not None:
-                import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
                 # Create sliding window mask where every token can still attend to the prompt
                 from transformers.masking_utils import create_sliding_window_causal_mask
                 B, S = loss_mask.shape
