@@ -242,7 +242,7 @@ def train(config: RLTrainerConfig):
                     # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
                     def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
                         # same indexing style as transformers' padding_mask_function
-                        return not(loss_mask[batch_idx, kv_idx])
+                        return False # not(loss_mask[batch_idx, kv_idx])
                     return prompt_mask_fn
 
                 or_mask_fn = make_prompt_or_mask(loss_mask)
