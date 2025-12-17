@@ -237,12 +237,18 @@ def train(config: RLTrainerConfig):
                 from transformers.masking_utils import create_sliding_window_causal_mask
                 B, S = loss_mask.shape
 
-                # TODO: Use q_idx to make sure it is the prompt specific to the seq this q_idx belongs to
+                starts = torch.zeros_like(position_ids, dtype=torch.bool)
+                starts[:, 0] = True
+                starts[:, 1:] = position_ids[:, 1:] <= position_ids[:, :-1]
+                seg_id = starts.to(torch.int32).cumsum(dim=1) - 1
+
                 def make_prompt_or_mask(loss_mask: torch.Tensor):
                     # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
                     def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
-                        # same indexing style as transformers' padding_mask_function
-                        return False # not(loss_mask[batch_idx, kv_idx])
+                        same_seg = seg_id[batch_idx, kv_idx] == seg_id[batch_idx, q_idx]
+                        is_prompt = not(loss_mask[b, kv_idx])
+                        return same_seg & is_prompt
+                        # return not(loss_mask[batch_idx, kv_idx])
                     return prompt_mask_fn
 
                 or_mask_fn = make_prompt_or_mask(loss_mask)
