@@ -191,6 +191,20 @@ class RLTrainerConfig(BaseSettings):
         ),
     ] = 4
 
+    sw: Annotated[
+        int | None,
+        Field(
+            description="Window size if prefix sliding.",
+        ),
+    ] = None
+
+    n_update: Annotated[
+        int | None,
+        Field(
+            description="#tokens to update based on",
+        ),
+    ] = None    
+
     @model_validator(mode="after")
     def auto_setup_bench(self):
         if self.bench:

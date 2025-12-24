@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import copy
 import time
 from datetime import timedelta
 
@@ -270,8 +271,87 @@ def train(config: RLTrainerConfig):
             temperature = micro_batch["temperature"]
 
             # Forward pass
+            kwargs = {}
+            if config.sw is not None:
+                # import pdb; pdb.set_trace()
+                # Create sliding window mask where every token can still attend to the prompt
+                from transformers.masking_utils import create_sliding_window_causal_mask
+                B, S = loss_mask.shape
+
+                starts = torch.zeros_like(position_ids, dtype=torch.bool)
+                starts[:, 0] = True
+                starts[:, 1:] = position_ids[:, 1:] <= position_ids[:, :-1]
+                seg_id = starts.to(torch.int32).cumsum(dim=1) - 1
+
+                def make_prompt_or_mask(loss_mask: torch.Tensor):
+                    # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
+                    def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
+                        same_seg = seg_id[batch_idx, kv_idx] == seg_id[batch_idx, q_idx]
+                        is_prompt = not(loss_mask[b, kv_idx])
+                        return same_seg & is_prompt
+                        # return not(loss_mask[batch_idx, kv_idx])
+                    return prompt_mask_fn
+
+                or_mask_fn = make_prompt_or_mask(loss_mask)
+                cache_position = torch.arange(input_ids.shape[1], dtype=torch.long, device=input_ids.device)
+                conf = copy.copy(model.config)
+                setattr(conf, "sliding_window", config.sw)
+                setattr(conf, "use_sliding_window", True)
+                sliding_causal_mask = create_sliding_window_causal_mask(
+                    config=conf,
+                    # Only its 1st & 2nd shape are used which is the same for input_ids or inputs_embeds
+                    # https://github.com/huggingface/transformers/blob/cf084f5b40e19b5a5f946cee75bead6d4247b071/src/transformers/masking_utils.py#L838
+                    input_embeds=input_ids,
+                    attention_mask=None, # Let it autocreate a seq-packed mask
+                    position_ids=position_ids,
+                    cache_position=cache_position,          # 1D tensor of query positions
+                    past_key_values=None,        # pass if you have a Cache, else None
+                    or_mask_function=or_mask_fn,            # ensures prompt tokens are always attendable
+                    and_mask_function=None,
+                )
+                kwargs['attention_mask'] = {
+                    "full_attention": sliding_causal_mask,
+                }
+                
+                ### TODO: How to get a prompt mask
+                #prompt_mask_batch = prompt_mask[start : start + batch_size]
+                #_, SP = prompt_mask_batch.shape
+                # Pad prompt_mask_batch i.e. ignore all the completion tokens
+                #prompt_mask_batch = torch.nn.functional.pad(
+                #    prompt_mask_batch,
+                #    (0, S - SP),
+                #    value=0,
+                #)
+                # prompt_mask is now shape (B, S) boolean where True == prompt token (non-pad & before cutoff)                
+                # create an or_mask_function that returns True when kv_idx is a prompt token
+                # def make_prompt_or_mask(prompt_mask: torch.Tensor):
+                #     # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
+                #     def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
+                #         # same indexing style as transformers' padding_mask_function
+                #         return prompt_mask[batch_idx, kv_idx]
+                #     return prompt_mask_fn
+
+                # or_mask_fn = make_prompt_or_mask(prompt_mask_batch)
+                # cache_position = torch.arange(model_inputs['input_ids'].shape[1], dtype=torch.long, device=attention_mask_batch.device)
+                # conf = copy.copy(model.config)
+                # setattr(conf, "sliding_window", config.sw)
+                # setattr(conf, "use_sliding_window", True)
+                # sliding_causal_mask = create_sliding_window_causal_mask(
+                #     config=conf,
+                #     # Only its 1st & 2nd shape are used which is the same for input_ids or inputs_embeds
+                #     # https://github.com/huggingface/transformers/blob/cf084f5b40e19b5a5f946cee75bead6d4247b071/src/transformers/masking_utils.py#L838
+                #     input_embeds=model_inputs['input_ids'],
+                #     attention_mask=attention_mask_batch,    # 2D padding mask (B, S)
+                #     cache_position=cache_position,          # 1D tensor of query positions
+                #     past_key_values=None,        # pass if you have a Cache, else None
+                #     or_mask_function=or_mask_fn,            # ensures prompt tokens are always attendable
+                #     and_mask_function=None,
+                # )
+                # kwargs['attention_mask'] = {
+                #     "full_attention": sliding_causal_mask,
+                # }
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, forward_position_ids).float().contiguous()
+                logits = forward(model, input_ids, forward_position_ids, **kwargs).float().contiguous()
 
             if cp_enabled:
                 left_pad_logit = get_padding_logit_from_prev_cp_rank(logits, cp_rank, cp_size, cp_group)
