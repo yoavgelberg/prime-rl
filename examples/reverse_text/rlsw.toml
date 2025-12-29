@@ -1,5 +1,7 @@
 max_steps = 2000
-seq_len = 1638
+seq_len = 8192
+
+[trainer]
 sw = 4096
 
 [model]
@@ -14,7 +16,7 @@ batch_size = 64
 rollouts_per_example = 8
 
 [orchestrator.sampling]
-max_tokens = 16384
+max_tokens = 8192
 
 [[orchestrator.env]]
 id = "reverse-text"

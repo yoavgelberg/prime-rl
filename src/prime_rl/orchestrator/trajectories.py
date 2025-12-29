@@ -102,7 +102,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
         rollouts.append(rollout)
     return rollouts
 
-def branch_rollout_n(state: vf.State, n_update: int) -> list[TrainingExample]:
+def branch_rollout_n(state: vf.State, n_update: int) -> list[TrainingSample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     n_take = n_update * 4
     rollouts = []
