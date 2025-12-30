@@ -288,7 +288,7 @@ def train(config: RLTrainerConfig):
                     # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
                     def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
                         same_seg = seg_id[batch_idx, kv_idx] == seg_id[batch_idx, q_idx]
-                        is_prompt = not(loss_mask[b, kv_idx])
+                        is_prompt = ~(loss_mask[batch_idx, kv_idx])
                         return same_seg & is_prompt
                         # return not(loss_mask[batch_idx, kv_idx])
                     return prompt_mask_fn
@@ -298,6 +298,9 @@ def train(config: RLTrainerConfig):
                 conf = copy.copy(model.config)
                 setattr(conf, "sliding_window", config.sw)
                 setattr(conf, "use_sliding_window", True)
+                setattr(conf, "_attn_implementation", "flex_attention")
+                #import pdb; pdb.set_trace()
+                setattr(model.config, "_attn_implementation", "flex_attention")
                 sliding_causal_mask = create_sliding_window_causal_mask(
                     config=conf,
                     # Only its 1st & 2nd shape are used which is the same for input_ids or inputs_embeds
@@ -313,7 +316,7 @@ def train(config: RLTrainerConfig):
                 kwargs['attention_mask'] = {
                     "full_attention": sliding_causal_mask,
                 }
-                
+                import pdb; pdb.set_trace()        
                 ### TODO: How to get a prompt mask
                 #prompt_mask_batch = prompt_mask[start : start + batch_size]
                 #_, SP = prompt_mask_batch.shape
@@ -351,6 +354,7 @@ def train(config: RLTrainerConfig):
                 # kwargs['attention_mask'] = {
                 #     "full_attention": sliding_causal_mask,
                 # }
+            #setattr(model.config, "_attn_implementation", "flex_attention")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, forward_position_ids, **kwargs).float().contiguous()
 
