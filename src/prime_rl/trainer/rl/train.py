@@ -287,9 +287,14 @@ def train(config: RLTrainerConfig):
                 def make_prompt_or_mask(loss_mask: torch.Tensor):
                     # signature must be: (batch_idx, head_idx, q_idx, kv_idx)
                     def prompt_mask_fn(batch_idx, head_idx, q_idx, kv_idx):
+                        #if kv_idx > q_idx: return torch.tensor(False).to(seg_id.device)
+                        causal = torch.as_tensor(kv_idx <= q_idx, device=seg_id.device)
                         same_seg = seg_id[batch_idx, kv_idx] == seg_id[batch_idx, q_idx]
                         is_prompt = ~(loss_mask[batch_idx, kv_idx])
-                        return same_seg & is_prompt
+
+                        #return torch.tensor(1).bool().to(same_seg.device)
+                        #print("X", same_seg, is_prompt)
+                        return (same_seg & is_prompt & causal)# and (int(kv_idx) <= int(q_idx))
                         # return not(loss_mask[batch_idx, kv_idx])
                     return prompt_mask_fn
 
@@ -316,7 +321,7 @@ def train(config: RLTrainerConfig):
                 kwargs['attention_mask'] = {
                     "full_attention": sliding_causal_mask,
                 }
-                import pdb; pdb.set_trace()        
+                #import pdb; pdb.set_trace()        
                 ### TODO: How to get a prompt mask
                 #prompt_mask_batch = prompt_mask[start : start + batch_size]
                 #_, SP = prompt_mask_batch.shape

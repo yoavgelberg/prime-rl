@@ -1,0 +1,24 @@
+max_steps = 20
+seq_len = 2048
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "i3-math"
+name = "i3-math"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 128
+
+[[orchestrator.env]]
+id = "i3-math"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
