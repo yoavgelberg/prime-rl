@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-#from ring_flash_attn import update_ring_flash_attn_params
+from ring_flash_attn import update_ring_flash_attn_params
 
 
 def shard_for_cp(t: torch.Tensor, cp_rank: int, cp_world_size: int) -> torch.Tensor:
