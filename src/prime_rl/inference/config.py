@@ -184,6 +184,13 @@ class InferenceConfig(BaseSettings):
         ),
     ] = 0
 
+    compilation_config: Annotated[
+        dict[str, Any] | str | None,
+        Field(
+            description='For PS, use: {"cudagraph_mode": "PIECEWISE"}',
+        ),
+    ] = None
+
     weight_broadcast: Annotated[WeightBroadcastConfig, Field(description="The weight broadcast config.")] = (
         WeightBroadcastConfig()
     )
@@ -255,6 +262,7 @@ class InferenceConfig(BaseSettings):
             "max_lora_rank": "max_lora_rank",
             "gpu_memory_utilization": "gpu_memory_utilization",
             "api_server_count": "api_server_count",
+            "compilation_config": "compilation_config",
         }
 
         for key in get_all_fields(self):
@@ -272,5 +280,10 @@ class InferenceConfig(BaseSettings):
         if hasattr(namespace, "rope_scaling"):
             if namespace.rope_scaling is None:
                 delattr(namespace, "rope_scaling")
+
+        # Remove compilation_config if not set (vLLM doesn't accept None)
+        if hasattr(namespace, "compilation_config"):
+            if namespace.compilation_config is None:
+                delattr(namespace, "compilation_config")        
 
         return namespace
