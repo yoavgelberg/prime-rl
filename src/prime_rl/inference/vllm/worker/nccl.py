@@ -110,7 +110,7 @@ class NCCLWeightUpdateWorker(Worker):
         """Update weights with the nccl communicator."""
         model_runner = self.model_runner
         # No runnable for some cudagraph modes like PIECEWISE
-        if hasattr(model_runner.model, runnable):
+        if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
         else:
             model = model_runner.model

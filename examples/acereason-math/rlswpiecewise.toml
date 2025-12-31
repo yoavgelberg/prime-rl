@@ -1,0 +1,28 @@
+max_steps = 2000
+seq_len = 16384
+
+[trainer]
+sw = 4096
+
+[model]
+name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
+
+[wandb]
+project = "reverse-text"
+name = "reverse-text"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 16
+
+[orchestrator.sampling]
+max_tokens = 16384
+
+[[orchestrator.env]]
+id = "acereason-math"
+
+[trainer.optim]
+lr = 3e-6
+
+[inference]
+compilation_config = {cudagraph_mode="PIECEWISE"}
