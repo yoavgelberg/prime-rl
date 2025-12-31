@@ -52,7 +52,7 @@ from prime_rl.utils.heartbeat import Heartbeat
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, resolve_latest_ckpt_step, to_col_format
-#from ring_flash_attn import substitute_hf_flash_attn
+from ring_flash_attn import substitute_hf_flash_attn
 
 
 @clean_exit
@@ -240,7 +240,6 @@ def train(config: RLTrainerConfig):
             memory_profiler = MemoryProfiler(progress.step, config.memory_profiler_path)
 
         forward_backward_start_time = time.perf_counter()
-        #import pdb; pdb.set_trace()
         seq_len = micro_batches[0]["input_ids"].shape[1]
 
         # Normalize by the local number of unmasked tokens in the batch (per-batch length normalization)
