@@ -290,7 +290,7 @@ def train(config: RLTrainerConfig):
                         return (same_seg & is_prompt & causal)
                     return prompt_mask_fn
 
-                or_mask_fn = make_prompt_or_mask(loss_mask)
+                or_mask_fn = make_prompt_or_mask(loss_mask.clone())
                 cache_position = torch.arange(input_ids.shape[1], dtype=torch.long, device=input_ids.device)
                 conf = copy.copy(model.config)
                 setattr(conf, "sliding_window", config.sw)
@@ -323,7 +323,7 @@ def train(config: RLTrainerConfig):
                     offset = torch.where(seg_start, prev_cs, 0) # mark per-seg offsets
                     counts = cs - offset.cummax(1).values # per-seg reversed cumsum
                     loss_mask &= (counts <= config.n_update).flip(1) # keep last n True per segment
-
+ 
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, forward_position_ids, **kwargs).float().contiguous()
 
