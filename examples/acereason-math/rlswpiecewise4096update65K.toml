@@ -1,9 +1,11 @@
 max_steps = 2000
-seq_len = 16384
 
 [trainer]
 sw = 4096
 n_update = 4096
+
+[trainer.model]
+seq_len = 16384
 
 [model]
 name = "PrimeIntellect/Qwen3-0.6B-Reverse-Text-SFT"
@@ -16,6 +18,7 @@ name = "reverse-text"
 batch_size = 64
 rollouts_per_example = 16
 n_update = 4096
+seq_len = 65536
 
 [orchestrator.sampling]
 max_tokens = 65536

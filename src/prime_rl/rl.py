@@ -360,10 +360,13 @@ class RLConfig(BaseSettings):
             self.orchestrator.seq_len = self.seq_len
 
         if self.trainer.model.seq_len < self.orchestrator.seq_len:
-            raise ValueError(
-                f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
-                f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
-            )
+            if self.orchestrator.n_update is None:
+                raise ValueError(
+                    f"Trainer model seq_len ({self.trainer.model.seq_len}) must be >= orchestrator seq_len ({self.orchestrator.seq_len}). "
+                    f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
+                )
+            else:
+                print("Running with n_update and model & orch seq lens of:", self.trainer.model.seq_len, self.orchestrator.seq_len)
 
         return self
 
@@ -456,7 +459,7 @@ def monitor_process(process: Popen, stop_event: Event, error_queue: list, proces
             if process.stderr:
                 err_msg += f"\n{process.stderr.read().decode('utf-8')}"
             error_queue.append(RuntimeError(err_msg))
-        stop_event.set()
+        top_event.set()
     except Exception as e:
         error_queue.append(RuntimeError(f"Error monitoring {process_name}: {e}"))
         stop_event.set()
