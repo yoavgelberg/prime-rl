@@ -312,6 +312,17 @@ def train(config: RLTrainerConfig):
                 kwargs['attention_mask'] = {
                     "full_attention": sliding_causal_mask,
                 }
+                # Mask out tokens not among n_update (we take more tokens than what we update on to get more accurate gradients)
+                if config.n_update is not None:
+                    rev_seg  = seg_id.flip(1)
+                    seg_start = torch.zeros_like(rev_seg, dtype=torch.bool)
+                    seg_start[:, 0] = True
+                    seg_start[:, 1:] = rev_seg[:, 1:] != rev_seg[:, :-1] # boundaries in reversed view
+                    cs = loss_mask.flip(1).cumsum(1) # global cumsum
+                    prev_cs = torch.cat([torch.zeros_like(cs[:, :1]), cs[:, :-1]], 1) # cs at i-1 (or 0)
+                    offset = torch.where(seg_start, prev_cs, 0) # mark per-seg offsets
+                    counts = cs - offset.cummax(1).values # per-seg reversed cumsum
+                    loss_mask &= (counts <= n).flip(1) # keep last n True per segment
 
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, forward_position_ids, **kwargs).float().contiguous()
