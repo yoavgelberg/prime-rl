@@ -104,17 +104,30 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
 
 def branch_rollout_n(state: vf.State, n_update: int) -> list[TrainingSample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
-    n_take = n_update * 4
+    logger = get_logger()
+
     rollouts = []
+    trajectory = state["trajectory"]
+    if len(trajectory) == 0:
+        logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
+        return None
+
+    n_take = n_update * 4
+    
+    has_error = state["error"] is not None
     for step in state["trajectory"]:
         assert "tokens" in step
         tokens = step["tokens"]
-        rollout = TrainingExample(
-            prompt_ids=deepcopy(tokens["prompt_ids"][:n_take]),
-            prompt_mask=deepcopy(tokens["prompt_mask"][:n_take]),
-            completion_ids=deepcopy(tokens["completion_ids"][:n_take]),
-            completion_mask=deepcopy(tokens["completion_mask"][:n_take]),
-            completion_logprobs=deepcopy(tokens["completion_logprobs"][:n_take]),
+        if has_error:
+            completion_mask = [False] * len(tokens["completion_mask"])
+        else:
+            completion_mask = [bool(i) for i in tokens["completion_mask"]]
+        rollout = TrainingSample(
+            prompt_ids=deepcopy(tokens["prompt_ids"]),
+            prompt_mask=[bool(i) for i in tokens["prompt_mask"]],
+            completion_ids=deepcopy(tokens["completion_ids"][-n_take:]),
+            completion_mask=completion_mask[-n_take:],
+            completion_logprobs=deepcopy(tokens["completion_logprobs"][-n_take:]),
             advantage=None,
         )
         rollouts.append(rollout)

@@ -322,7 +322,7 @@ def train(config: RLTrainerConfig):
                     prev_cs = torch.cat([torch.zeros_like(cs[:, :1]), cs[:, :-1]], 1) # cs at i-1 (or 0)
                     offset = torch.where(seg_start, prev_cs, 0) # mark per-seg offsets
                     counts = cs - offset.cummax(1).values # per-seg reversed cumsum
-                    loss_mask &= (counts <= n).flip(1) # keep last n True per segment
+                    loss_mask &= (counts <= config.n_update).flip(1) # keep last n True per segment
 
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
                 logits = forward(model, input_ids, forward_position_ids, **kwargs).float().contiguous()
