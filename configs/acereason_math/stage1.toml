@@ -29,17 +29,20 @@ args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", que
 [orchestrator.eval]
 interval = 50
 
-[[orchestrator.eval.env]]
-id = "math500"
-rollouts_per_example = 1
+#[[orchestrator.eval.env]]
+#id = "math500"
+#rollouts_per_example = 1
+#judge_api_key_var = ""
 
-[[orchestrator.eval.env]]
-id = "aime2024"
-rollouts_per_example = 32
+#[[orchestrator.eval.env]]
+#id = "aime2024"
+#rollouts_per_example = 32
+#judge_api_key_var = ""
 
-[[orchestrator.eval.env]]
-id = "aime2025"
-rollouts_per_example = 32
+#[[orchestrator.eval.env]]
+#id = "aime2025"
+#rollouts_per_example = 32
+
 
 [trainer.model.ac]
 
