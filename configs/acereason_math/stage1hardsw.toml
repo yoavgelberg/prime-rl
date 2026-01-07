@@ -14,7 +14,7 @@ seq_len = 8192
 name = "ryzax/DeepSeek-R1-Distill-Qwen-7B"
 
 [ckpt]
-interval = 1
+interval = 500
 
 [wandb]
 project = "acereason-math"
@@ -54,7 +54,7 @@ rollouts_per_example = 32
 
 [[orchestrator.eval.env]]
 id = "aime2025"
-#rollouts_per_example = 32
+rollouts_per_example = 32
 
 
 [trainer.model.ac]
