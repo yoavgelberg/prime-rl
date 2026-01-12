@@ -227,6 +227,15 @@ class RLTrainerConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_prefix_sliding(self):
+        if self.sw and self.n_update:
+            if self.n_update % self.sw != 0:
+                raise ValueError(
+                    "n_update should be a multiple of sw i.e. its smallest possible value equals sw."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_lora_adapter_saving(self):
         if self.ckpt and self.ckpt.weights and self.ckpt.weights.save_adapter_separately:
             lora_enabled = self.model and self.model.lora
