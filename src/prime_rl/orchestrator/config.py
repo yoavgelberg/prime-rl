@@ -642,6 +642,13 @@ class OrchestratorConfig(BaseSettings):
         ),
     ] = None
 
+    n_update_multiplier: Annotated[
+        int | None,
+        Field(
+            description="To get sequence length used for computing correct gradients.",
+        ),
+    ] = 4
+
     @model_validator(mode="after")
     def nccl_max_async_level(self):
         if self.weight_broadcast.type == "nccl":
