@@ -102,7 +102,7 @@ def branch_rollout(state: vf.State) -> list[TrainingSample] | None:
         rollouts.append(rollout)
     return rollouts
 
-def branch_rollout_n(state: vf.State, n_update: int) -> list[TrainingSample]:
+def branch_rollout_n(state: vf.State, n_update: int, n_update_multiplier: int = 4) -> list[TrainingSample]:
     """Convert vf.State to *multiple* trainable rollouts using branching trajectories strategy."""
     logger = get_logger()
 
@@ -112,7 +112,7 @@ def branch_rollout_n(state: vf.State, n_update: int) -> list[TrainingSample]:
         logger.warning(f"No trajectory steps for example {state['example_id']}. Skipping rollout.")
         return None
 
-    n_take = n_update * 4
+    n_take = n_update * n_update_multiplier
     
     has_error = state["error"] is not None
     for step in state["trajectory"]:
