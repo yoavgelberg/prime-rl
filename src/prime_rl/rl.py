@@ -366,7 +366,8 @@ class RLConfig(BaseSettings):
                     f"The trainer needs to be able to handle sequences at least as long as those produced by the orchestrator."
                 )
             else:
-                print("Running with n_update and model & orch seq lens of:", self.trainer.model.seq_len, self.orchestrator.seq_len)
+                assert self.orchestrator.n_update == self.trainer.n_update, "Orchestrator & Trainer n_update must be equal"
+                print("Running with n_update/model seq len/orch seq lens:", self.orchestrator.n_update, self.trainer.model.seq_len, self.orchestrator.seq_len)
 
         return self
 
