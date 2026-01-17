@@ -1,4 +1,4 @@
-swf4kpass8k.tomlmax_steps = 10
+max_steps = 10
 
 [trainer]
 sw = 4096
