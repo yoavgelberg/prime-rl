@@ -1,0 +1,62 @@
+inference_gpu_ids = [0,1,2,3,4,5]
+trainer_gpu_ids = [6,7]
+output_dir = "/shared/outputs/niklas/swnup"
+max_steps = 500
+#seq_len = 8192
+
+[trainer]
+sw = 8192
+n_update = 8192
+
+[trainer.model]
+seq_len = 32768
+
+[model]
+name = "ryzax/DeepSeek-R1-Distill-Qwen-7B"
+
+[ckpt]
+interval = 100
+
+[wandb]
+project = "acereason-math"
+name = "stage1"
+
+[orchestrator]
+batch_size = 1024
+rollouts_per_example = 8
+seq_len = 65536
+n_update = 8192
+
+[orchestrator.sampling]
+temperature = 0.6
+max_tokens = 65536
+
+[[orchestrator.env]]
+id = "math-env"
+args = { dataset_name = "nvidia/AceReason-Math", dataset_subset = "default", question_key = "problem", math_verify_max_workers = 128, math_verify_timeout = 60 }
+
+[orchestrator.eval]
+interval = 50
+
+#[[orchestrator.eval.env]]
+#id = "math500"
+#rollouts_per_example = 1
+#judge_api_key_var = ""
+
+[[orchestrator.eval.env]]
+id = "aime2024"
+rollouts_per_example = 32
+#judge_api_key_var = ""
+
+[[orchestrator.eval.env]]
+id = "aime2025"
+rollouts_per_example = 32
+
+
+[trainer.model.ac]
+
+[inference.parallel]
+dp = 6
+
+[inference]
+compilation_config = {cudagraph_mode="PIECEWISE"}
