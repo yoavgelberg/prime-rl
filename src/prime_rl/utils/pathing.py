@@ -29,18 +29,33 @@ def get_broadcast_dir(output_dir: Path) -> Path:
     return output_dir / "broadcasts"
 
 
+def get_env_worker_log_file(output_dir: Path, env_name: str) -> Path:
+    return output_dir / "logs" / "env_workers" / f"{env_name}.log"
+
+
 def get_step_path(path: Path, step: int) -> Path:
     return path / f"step_{step}"
 
 
+def get_all_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Gets all checkpoint steps from the checkpoint directory, sorted in ascending order."""
+    step_dirs = list(ckpt_dir.glob("step_*"))
+    return sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
+
+
+def get_stable_ckpt_steps(ckpt_dir: Path) -> list[int]:
+    """Gets checkpoint steps that have STABLE file, sorted in ascending order."""
+    steps = get_all_ckpt_steps(ckpt_dir)
+    return [s for s in steps if (ckpt_dir / f"step_{s}" / "STABLE").exists()]
+
+
 def resolve_latest_ckpt_step(ckpt_dir: Path) -> int | None:
     """Gets the latest checkpoint step from the checkpoint directory. Returns None if no checkpoints are found."""
-    step_dirs = list(ckpt_dir.glob("step_*"))
-    if len(step_dirs) == 0:
+    steps = get_all_ckpt_steps(ckpt_dir)
+    if len(steps) == 0:
         logger = get_logger()
         logger.warning(f"No checkpoints found in {ckpt_dir}. Starting from scratch.")
         return None
-    steps = sorted([int(step_dir.name.split("_")[-1]) for step_dir in step_dirs])
     latest_step = steps[-1]
     logger = get_logger()
     logger.info(f"Found latest checkpoint in {ckpt_dir}: {latest_step}")

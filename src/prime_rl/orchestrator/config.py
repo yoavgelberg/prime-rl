@@ -1,30 +1,124 @@
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Discriminator, Field, Tag, model_validator
 
 from prime_rl.transport.config import FileSystemTransportConfig, TransportConfigType
 from prime_rl.utils.config import (
     ClientConfig,
     HeartbeatConfig,
     LogConfig,
-    ModelConfig,
     PrimeMonitorConfig,
     WandbWithExtrasConfig,
 )
+from prime_rl.utils.config import (
+    ModelConfig as BaseModelConfig,
+)
 from prime_rl.utils.pydantic_config import BaseConfig, BaseSettings
+
+
+class OptimizerConfig(BaseConfig):
+    """Per-run optimizer configuration for multi-run training."""
+
+    lr: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Learning rate for this run.",
+        ),
+    ] = 1e-4
+
+
+class LoRAConfig(BaseConfig):
+    """Per-run LoRA configuration for multi-run training."""
+
+    name: Annotated[
+        str | None,
+        Field(
+            description="Name of the LoRA adapter. If None, auto-generated from rank and alpha.",
+        ),
+    ] = None
+
+    rank: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="LoRA rank for this run. Must be <= trainer's max rank. If None, uses trainer's rank.",
+        ),
+    ] = None
+
+    alpha: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="LoRA alpha for this run.",
+        ),
+    ] = 32.0
+
+
+class ModelConfig(BaseModelConfig):
+    """Extended model configuration with per-run LoRA settings."""
+
+    lora: Annotated[
+        LoRAConfig | None,
+        Field(
+            description="LoRA configuration. If None, LoRA is not used.",
+        ),
+    ] = None
+
+
+class TemperatureScheduleConfig(BaseConfig):
+    """Configures temperature scheduling over training steps. Use this OR sampling.temperature, not both."""
+
+    type: Annotated[
+        Literal["linear", "cosine"],
+        Field(
+            description="Schedule shape. Linear interpolates linearly; cosine uses smooth, monotonic curve.",
+        ),
+    ] = "linear"
+
+    start_temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Temperature at step 0.",
+        ),
+    ]
+
+    end_temperature: Annotated[
+        float,
+        Field(
+            ge=0,
+            description="Temperature at final step.",
+        ),
+    ]
+
+    total_steps: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Number of steps to reach end_temperature. Defaults to orchestrator max_steps if None.",
+        ),
+    ] = None
 
 
 class SamplingConfig(BaseConfig):
     """Configures how tokens are sampled from the model for training. Largely follows the vLLM sampling parameters."""
 
     temperature: Annotated[
-        float,
+        float | None,
         Field(
             ge=0,
-            description="Scales the output probability distribution. Lower values => more deterministic, higher values => more random. If 0, will sample greedily.",
+            description="Constant temperature for sampling. Defaults to 1.0 if neither this nor temp_scheduler is set. Cannot be set together with temp_scheduler.",
         ),
-    ] = 1.0
+    ] = None
+
+    temp_scheduler: Annotated[
+        TemperatureScheduleConfig | None,
+        Field(
+            description="Temperature schedule over training steps. Set this OR temperature, not both.",
+        ),
+    ] = None
 
     repetition_penalty: Annotated[
         float,
@@ -240,9 +334,9 @@ class RetryConfig(BaseConfig):
     reraise: Annotated[
         bool,
         Field(
-            description="Whether to reraise the exception after all retries are exhausted.",
+            description="Whether to reraise the original exception after all retries are exhausted. If False, raises tenacity.RetryError instead.",
         ),
-    ] = True
+    ] = False
 
 
 class EnvConfig(BaseConfig):
@@ -341,6 +435,17 @@ class OnlineEvalConfig(EvalConfig):
         ),
     ] = True
 
+    skip_eval_on_resume: Annotated[
+        bool,
+        Field(
+            validation_alias=AliasChoices("skip_eval_on_resume", "skip_eval_on_restart"),
+            description=(
+                "If True and resuming the orchestrator from a checkpoint, skip the (potentially redundant) "
+                "online eval that would otherwise run immediately at the resumed checkpoint step."
+            ),
+        ),
+    ] = True
+
 
 class CheckpointConfig(BaseConfig):
     """Configures checkpointing the orchestrator."""
@@ -355,11 +460,27 @@ class CheckpointConfig(BaseConfig):
         ),
     ] = None
 
-    keep: Annotated[
+    wait_for_weights_timeout: Annotated[
         int | None,
         Field(
             ge=1,
-            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints.",
+            description="When resuming, wait up to this many seconds for the weight directory to appear. Useful when the orchestrator restarts while the trainer is still saving weights. If None (default), fail immediately if weights are not found.",
+        ),
+    ] = None
+
+    keep_last: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep at most this many recent step checkpoints on disk. If None, never clean old checkpoints based on recency.",
+        ),
+    ] = None
+
+    keep_interval: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Keep checkpoints at every N steps permanently (e.g., keep_interval=100 keeps step 100, 200, ...). If None, no interval-based keeping.",
         ),
     ] = None
 
@@ -445,6 +566,17 @@ class BufferConfig(BaseConfig):
         ),
     ] = ["task", "prompt"]
 
+    skip_verification: Annotated[
+        bool,
+        Field(
+            description=(
+                "Whether to skip verification of rollouts using the environment's rubric. "
+                "If True, rewards are always set to 0, online_difficulty_filtering is disabled, "
+                "and easy/hard thresholds are not used."
+            ),
+        ),
+    ] = False
+
     @model_validator(mode="after")
     def validate_thresholds(self):
         if self.easy_threshold is not None and self.hard_threshold is not None:
@@ -457,9 +589,57 @@ class BufferConfig(BaseConfig):
             assert all(ratio > 0 for ratio in self.env_ratios), "All env_ratios must be positive."
         return self
 
+    @model_validator(mode="after")
+    def validate_skip_verification(self):
+        """Validate that skip_verification is not used with reward-dependent features."""
+        if self.skip_verification:
+            if self.online_difficulty_filtering:
+                raise ValueError(
+                    "skip_verification cannot be True when online_difficulty_filtering is True. "
+                    "These features depend on rewards which are disabled when skip_verification=True."
+                )
+            if self.easy_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when easy_threshold is set. "
+                    "Easy threshold depends on rewards which are disabled when skip_verification=True."
+                )
+            if self.hard_threshold is not None:
+                raise ValueError(
+                    "skip_verification cannot be True when hard_threshold is set. "
+                    "Hard threshold depends on rewards which are disabled when skip_verification=True."
+                )
+        return self
+
 
 class AdvantageConfig(BaseConfig):
+    """Config for the default advantage."""
+
+    type: Literal["default"] = "default"
     length_weighted_mean: bool = False
+
+
+class CustomAdvantageConfig(BaseModel):
+    """Config for a custom external advantage function."""
+
+    type: Literal["custom"] = "custom"
+    import_path: Annotated[
+        str, Field(description="Import path to the advantage function (e.g., 'my_module.my_advantage')")
+    ]
+    kwargs: Annotated[
+        dict[str, Any], Field(default_factory=dict, description="Kwargs to pass to the advantage function")
+    ]
+
+
+def _advantage_config_discriminator(v: Any) -> str:
+    if isinstance(v, dict):
+        return v.get("type", "default")
+    return getattr(v, "type", "default")
+
+
+AdvantageConfigType: TypeAlias = Annotated[
+    Annotated[AdvantageConfig, Tag("default")] | Annotated[CustomAdvantageConfig, Tag("custom")],
+    Discriminator(_advantage_config_discriminator),
+]
 
 
 class FileSystemWeightBroadcastConfig(BaseModel):
@@ -481,6 +661,20 @@ class NCCLWeightBroadcastConfig(BaseModel):
 WeightBroadcastConfigType: TypeAlias = FileSystemWeightBroadcastConfig | NCCLWeightBroadcastConfig
 
 
+class TeacherModelConfig(BaseConfig):
+    """Configures the teacher model for computing teacher logprobs (e.g. for distillation)."""
+
+    client: Annotated[
+        ClientConfig,
+        Field(description="The OAI client configuration for the teacher model."),
+    ] = ClientConfig()
+
+    model: Annotated[
+        ModelConfig,
+        Field(description="The model configuration for the teacher model."),
+    ] = ModelConfig()
+
+
 class OrchestratorConfig(BaseSettings):
     """Configures the orchestrator for RL training."""
 
@@ -489,6 +683,19 @@ class OrchestratorConfig(BaseSettings):
 
     # The model configuration
     model: ModelConfig = ModelConfig()
+
+    # The optimizer configuration (per-run LR for multi-run training)
+    optim: OptimizerConfig = OptimizerConfig()
+
+    # The teacher model configuration (optional)
+    teacher_model: Annotated[
+        TeacherModelConfig | None,
+        Field(
+            description="The teacher model configuration for computing teacher logprobs (e.g. for distillation). "
+            "If provided, teacher logprobs will be computed using the specified model. "
+            "If None, no teacher model will be used."
+        ),
+    ] = None
 
     # The sampling configuration
     sampling: SamplingConfig = SamplingConfig()
@@ -503,7 +710,7 @@ class OrchestratorConfig(BaseSettings):
     buffer: BufferConfig = BufferConfig()
 
     # The advantage configuration
-    advantage: AdvantageConfig | None = AdvantageConfig()
+    advantage: AdvantageConfigType | None = AdvantageConfig()
 
     # The logging configuration
     log: LogConfig = LogConfig()
@@ -516,6 +723,12 @@ class OrchestratorConfig(BaseSettings):
 
     # The checkpoint configuration
     ckpt: CheckpointConfig | None = None
+
+    # Whether to reset inference weights to base model when starting from scratch
+    reload_weights_on_start: Annotated[
+        bool,
+        Field(description="Whether to reset inference weights to the base model when starting from scratch."),
+    ] = True
 
     # The validation configuration
     val: ValConfig | None = None
@@ -543,9 +756,33 @@ class OrchestratorConfig(BaseSettings):
     max_concurrent: Annotated[
         int | None,
         Field(
-            description="Maximum number of concurrent rollouts to generate and score. Will create a global semaphore and pass to verifiers Environment. If None, will not limit concurrency.",
+            description="Maximum number of concurrent rollouts to generate and score per-environment. If None, will not limit concurrency.",
         ),
     ] = None
+
+    tasks_per_minute: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            description="Rate limit for tasks per environment worker, in tasks per minute. Recommended for sandbox-backed environments to prevent sandbox-not-ready errors during autoscaling. When set to None, no rate limiting is applied. Note: with multiple workers, the effective total rate equals workers × this value.",
+        ),
+    ] = None
+
+    workers_per_env: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Number of worker subprocesses to spawn per environment. Multiple workers enable isolation of event loop lag - if one worker slows down, others continue at full speed. Uses least-pending routing to distribute load.",
+        ),
+    ] = 1
+
+    max_env_worker_restarts: Annotated[
+        int,
+        Field(
+            ge=-1,
+            description="Maximum number of automatic restarts for an environment worker that dies unexpectedly. After this limit, the orchestrator will crash. Set to -1 for unlimited restarts.",
+        ),
+    ] = 5
 
     batch_size: Annotated[int, Field(ge=1, description="Number of samples to train on per step.")] = 128
 
@@ -624,13 +861,6 @@ class OrchestratorConfig(BaseSettings):
 
     seed: Annotated[int | None, Field(description="Random seed for the orchestrator.")] = 42
 
-    lora_name: Annotated[
-        str | None,
-        Field(
-            description="Name of the LoRA to use for the orchestrator. If None, will not use any LoRA.",
-        ),
-    ] = None
-
     heartbeat: Annotated[
         HeartbeatConfig | None, Field(description="The heartbeat config for monitoring training progress.")
     ] = None
@@ -648,6 +878,15 @@ class OrchestratorConfig(BaseSettings):
             description="To get sequence length used for computing correct gradients.",
         ),
     ] = 4
+
+    @model_validator(mode="after")
+    def validate_max_concurrent(self):
+        min_concurrent = self.rollouts_per_example * (self.workers_per_env or 1)
+        if self.max_concurrent is not None and self.max_concurrent < min_concurrent:
+            raise ValueError(
+                f"max_concurrent must be at least rollouts_per_example * workers_per_env ({min_concurrent})"
+            )
+        return self
 
     @model_validator(mode="after")
     def nccl_max_async_level(self):
@@ -680,5 +919,24 @@ class OrchestratorConfig(BaseSettings):
                 self.wandb.log_extras = None
             if self.prime_monitor:
                 self.prime_monitor.log_extras = None
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_temperature_config(self):
+        has_temp = self.sampling.temperature is not None
+        has_scheduler = self.sampling.temp_scheduler is not None
+
+        if has_temp and has_scheduler:
+            raise ValueError("Set either sampling.temperature OR sampling.temp_scheduler, not both")
+
+        # Default to temperature=1.0 if neither is set
+        if not has_temp and not has_scheduler:
+            self.sampling.temperature = 1.0
+
+        if has_scheduler:
+            schedule = self.sampling.temp_scheduler
+            if schedule.total_steps is None and self.max_steps is None:
+                raise ValueError("temp_scheduler.total_steps must be set when max_steps is None")
 
         return self

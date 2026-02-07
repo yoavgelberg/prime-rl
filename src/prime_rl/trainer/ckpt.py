@@ -20,6 +20,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 from prime_rl.trainer.config import CheckpointConfig, LoRAConfig, WeightCheckpointConfig
 from prime_rl.trainer.lora import has_lora_layers, save_lora_config
 from prime_rl.trainer.models import PreTrainedModelPrimeRL
+from prime_rl.trainer.optim import CPUOffloadOptimizer
 from prime_rl.trainer.runs import Progress
 from prime_rl.trainer.weights import (
     gather_weights_on_master,
@@ -29,7 +30,7 @@ from prime_rl.trainer.weights import (
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.tensor_hashing import get_module_signature, get_optimizer_signature
-from prime_rl.utils.utils import get_ckpt_dir, get_step_path, get_weights_dir
+from prime_rl.utils.utils import get_all_ckpt_steps, get_ckpt_dir, get_step_path, get_weights_dir
 
 
 class AppState(Stateful):
@@ -53,9 +54,20 @@ class AppState(Stateful):
         self.scheduler = scheduler
         self.progress = progress
 
+    def _get_base_optimizers(self) -> list[Optimizer]:
+        """Extract base optimizers from wrappers like CPUOffloadOptimizer."""
+        return [opt.base_optimizer if isinstance(opt, CPUOffloadOptimizer) else opt for opt in self.optimizers]
+
     def state_dict(self) -> dict[str, Any]:
+        # Move CPU-offloaded states to GPU before checkpointing
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
+                opt._move_states("cuda")
+                torch.cuda.synchronize()
+
         # Automatically manages FSDP FQN's, as well as sets the default state dict type to FSDP.SHARDED_STATE_DICT
-        model_state_dict, optimizer_state_dict = get_state_dict(self.model, self.optimizers)
+        base_optimizers = self._get_base_optimizers()
+        model_state_dict, optimizer_state_dict = get_state_dict(self.model, base_optimizers)
         state_dict = {
             "model": model_state_dict,
             "optimizers": optimizer_state_dict,
@@ -66,12 +78,26 @@ class AppState(Stateful):
         if self.progress is not None:
             progress_state_dict = asdict(self.progress)
             state_dict["progress"] = progress_state_dict
+
+        # Move states back to CPU
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer) and opt._initialized:
+                opt._move_states("cpu")
+
         return state_dict
 
     def load_state_dict(self, state_dict: dict[str, Any]):
+        base_optimizers = self._get_base_optimizers()
         set_state_dict(
-            self.model, self.optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
+            self.model, base_optimizers, model_state_dict=state_dict["model"], optim_state_dict=state_dict["optimizers"]
         )
+
+        # Re-initialize CPU offload wrappers after loading
+        for opt in self.optimizers:
+            if isinstance(opt, CPUOffloadOptimizer):
+                opt._move_states("cpu")
+                opt._initialized = True
+
         if self.scheduler is not None:
             self.scheduler.load_state_dict(state_dict["scheduler"])
         if self.progress is not None:
@@ -87,11 +113,22 @@ class CheckpointManager:
         self.ckpt_dir = get_ckpt_dir(output_dir)
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
+
+        all_steps = get_all_ckpt_steps(self.ckpt_dir)
+        if config.resume_step is not None and config.resume_step >= 0:
+            self.ckpt_steps = [s for s in all_steps if s <= config.resume_step]
+        else:
+            self.ckpt_steps = all_steps
 
     def get_ckpt_path(self, step: int) -> Path:
         """Get the path to write the trainer checkpoint for a given step."""
         return get_step_path(self.ckpt_dir, step) / "trainer"
+
+    def mark_stable(self, step: int) -> None:
+        """Write STABLE file to indicate checkpoint is complete (for eval to safely read)."""
+        if self.world.is_master:
+            step_path = get_step_path(self.ckpt_dir, step)
+            (step_path / "STABLE").touch()
 
     def save_to_path(
         self,
@@ -189,26 +226,41 @@ class CheckpointManager:
         )
 
         self.save_to_path(ckpt_path, model, optimizers, scheduler, progress, dataloader)
-        if self.world.is_master:
-            self.ckpt_steps.append(step)
+        self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
-        if self.config.keep is None:
+        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
+        if self.config.keep_last is None and self.config.keep_interval is None:
             return
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_delete = self.ckpt_steps[: -self.config.keep]
-        for ckpt_step in ckpt_steps_to_delete:
-            trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
-            ckpt_path = trainer_ckpt_path.parent
-            if ckpt_path.exists():
-                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                shutil.rmtree(ckpt_path)
+
+        # Determine which steps to keep
+        steps_to_keep = set()
+
+        # Keep the most recent keep_last steps
+        if self.config.keep_last is not None:
+            steps_to_keep.update(self.ckpt_steps[-self.config.keep_last :])
+
+        # Keep steps at keep_interval intervals
+        if self.config.keep_interval is not None:
+            for step in self.ckpt_steps:
+                if step % self.config.keep_interval == 0:
+                    steps_to_keep.add(step)
+
+        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
+        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+        if self.world.is_master:
+            for ckpt_step in ckpt_steps_to_delete:
+                trainer_ckpt_path = self.get_ckpt_path(ckpt_step)
+                ckpt_path = trainer_ckpt_path.parent
+                if ckpt_path.exists():
+                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                    shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.config.keep :]
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
 class WeightCheckpointManager:
@@ -220,15 +272,25 @@ class WeightCheckpointManager:
         config: WeightCheckpointConfig,
         lora_config: LoRAConfig | None = None,
         save_async: bool = False,
-        keep: int | None = None,
+        keep_last: int | None = None,
+        keep_interval: int | None = None,
+        resume_step: int | None = None,
     ):
         self.weights_dir = get_weights_dir(output_dir)
         self.config = config
         self.lora_config = lora_config
         self.logger = get_logger()
         self.world = get_world()
-        self.ckpt_steps: list[int] = []  # Sorted list of steps that have been checkpointed, only used on master rank
-        self.keep = keep
+        if self.world.is_master:
+            all_steps = get_all_ckpt_steps(self.weights_dir)
+            if resume_step is not None and resume_step >= 0:
+                self.ckpt_steps = [s for s in all_steps if s <= resume_step]
+            else:
+                self.ckpt_steps = all_steps
+        else:
+            self.ckpt_steps = []
+        self.keep_last = keep_last
+        self.keep_interval = keep_interval
 
     def get_step_path(self, step: int) -> Path:
         """Get the path to write the weight checkpoint for a given step."""
@@ -305,24 +367,42 @@ class WeightCheckpointManager:
         # Save weight checkpoint on master rank
         if self.world.is_master:
             self.save_to_path(step_path, state_dict, lora_state_dict, model, tokenizer)
-            self.ckpt_steps.append(step)
+            # Write STABLE file to indicate checkpoint is complete (for eval to safely read)
+            (step_path / "STABLE").touch()
+        self.ckpt_steps.append(step)
 
     def maybe_clean(self) -> None:
-        """Deletes past checkpoints beyond the most recent config.keep steps. No-op if config.keep is None."""
-        if self.keep is None:
+        """Deletes past checkpoints based on keep_last and keep_interval policies. No-op if both are None."""
+        if self.keep_last is None and self.keep_interval is None:
             return
 
         # Get all the checkpoint steps to delete
         assert list(self.ckpt_steps) == sorted(self.ckpt_steps)
-        ckpt_steps_to_delete = self.ckpt_steps[: -self.keep]
-        for ckpt_step in ckpt_steps_to_delete:
-            ckpt_path = self.get_step_path(ckpt_step)
-            if ckpt_path.exists():
-                self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
-                shutil.rmtree(ckpt_path)
+
+        # Determine which steps to keep
+        steps_to_keep = set()
+
+        # Keep the most recent keep_last steps
+        if self.keep_last is not None:
+            steps_to_keep.update(self.ckpt_steps[-self.keep_last :])
+
+        # Keep steps at keep_interval intervals
+        if self.keep_interval is not None:
+            for step in self.ckpt_steps:
+                if step % self.keep_interval == 0:
+                    steps_to_keep.add(step)
+
+        # Delete steps not in steps_to_keep (only master rank deletes to avoid race condition)
+        ckpt_steps_to_delete = [step for step in self.ckpt_steps if step not in steps_to_keep]
+        if self.world.is_master:
+            for ckpt_step in ckpt_steps_to_delete:
+                ckpt_path = self.get_step_path(ckpt_step)
+                if ckpt_path.exists():
+                    self.logger.debug(f"Removing past checkpoint for step {ckpt_step} ({ckpt_path})")
+                    shutil.rmtree(ckpt_path)
 
         # Update checkpoint steps
-        self.ckpt_steps = self.ckpt_steps[-self.keep :]
+        self.ckpt_steps = [step for step in self.ckpt_steps if step in steps_to_keep]
 
 
 def setup_ckpt_managers(
@@ -336,7 +416,9 @@ def setup_ckpt_managers(
             output_dir,
             ckpt_config.weights,
             lora_config=lora_config,
-            keep=ckpt_config.keep,
+            keep_last=ckpt_config.keep_last,
+            keep_interval=ckpt_config.keep_interval,
+            resume_step=ckpt_config.resume_step,
         )
     else:
         weight_ckpt_manager = None

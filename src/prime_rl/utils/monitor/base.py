@@ -6,13 +6,13 @@ import verifiers as vf
 
 class Monitor(ABC):
     """Base class for all monitoring implementations.
-    
+
     Subclasses should initialize a `history` attribute as a list of dictionaries
     to store logged metrics.
     """
 
     @abstractmethod
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         pass
 
     @abstractmethod
@@ -42,7 +42,7 @@ class NoOpMonitor(Monitor):
     def __init__(self):
         self.history: list[dict[str, Any]] = []
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
 
     def log_samples(self, rollouts: list[vf.State], step: int) -> None:
@@ -56,4 +56,3 @@ class NoOpMonitor(Monitor):
 
     def log_distributions(self, distributions: dict[str, list[float]], step: int) -> None:
         pass
-

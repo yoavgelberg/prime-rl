@@ -1,20 +1,17 @@
 import asyncio
 
-import verifiers as vf
-
 from prime_rl.eval.config import OfflineEvalConfig
 from prime_rl.eval.utils import run_evals
-from prime_rl.orchestrator.utils import set_semaphore
 from prime_rl.utils.client import (
-    check_has_model,
     check_health,
+    maybe_check_has_model,
     reload_weights,
     setup_admin_clients,
     setup_clients,
     setup_evals_client,
     update_weights,
 )
-from prime_rl.utils.logger import setup_logger
+from prime_rl.utils.logger import intercept_verifiers_logging, setup_logger
 from prime_rl.utils.monitor import setup_monitor
 from prime_rl.utils.pydantic_config import parse_argv
 from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_path, install_env
@@ -24,9 +21,11 @@ from prime_rl.utils.utils import clean_exit, get_env_ids_to_install, get_step_pa
 async def eval(config: OfflineEvalConfig):
     # Initialize the logger
     logger = setup_logger(
-        config.log.level, log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None
+        config.log.level,
+        log_file=config.output_dir / "logs" / "eval.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
-    vf.setup_logging(level=config.log.vf_level.upper())
+    intercept_verifiers_logging(level=config.log.vf_level)
 
     env_names = [env.name or env.id for env in config.env]
     logger.info(f"Starting evals for {config.model.name} in environments {', '.join(env_names)}")
@@ -56,7 +55,7 @@ async def eval(config: OfflineEvalConfig):
     # Check health of the client
     logger.info("Waiting for inference pool to be ready")
     await check_health(admin_clients)
-    await check_has_model(clients, config.model.name)
+    await maybe_check_has_model(clients, config.model.name, skip_model_check=config.client.skip_model_check)
     logger.success(f"Inference pool is healthy and serves {config.model.name}")
 
     # Reset weights to base model to allow reusing inference server across runs
@@ -64,13 +63,12 @@ async def eval(config: OfflineEvalConfig):
     await reload_weights(admin_clients)
 
     # Run benchmarks on base model
-    await set_semaphore(config.max_concurrent or -1)
     if config.eval_base:
         logger.info(f"Evaluating model {config.model.name}")
         await run_evals(
             clients=clients,
             eval_config=config,
-            model_config=config.model,
+            model_name=config.model.name,
             sampling_config=config.sampling,
             evals_client=evals_client,
             reasoning_field=config.reasoning_field,
@@ -82,31 +80,74 @@ async def eval(config: OfflineEvalConfig):
     # If specified, evaluate all checkpoints found in the weights directory
     if config.weights_dir is not None:
         logger.info(f"Evaluating weight checkpoints in {config.weights_dir}")
-        ckpt_steps = sorted([int(step_path.name.split("_")[-1]) for step_path in config.weights_dir.glob("step_*")])
-        logger.info(f"Found {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+        # Only include checkpoints that have a STABLE file (indicating save completed)
+        ckpt_steps = sorted(
+            [
+                int(step_path.name.split("_")[-1])
+                for step_path in config.weights_dir.glob("step_*")
+                if (step_path / "STABLE").exists()
+            ]
+        )
+        logger.info(f"Found {len(ckpt_steps)} stable weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+
+        if config.steps is not None:
+            missing_steps = [step for step in config.steps if step not in ckpt_steps]
+            if missing_steps:
+                raise ValueError(
+                    f"Step {missing_steps[0]} not found (or not stable) in weights directory {config.weights_dir}"
+                )
 
         # Filter the steps to evaluate
         if config.steps is not None:
             ckpt_steps = [step for step in ckpt_steps if step in config.steps]
 
-        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
-        for ckpt_step in ckpt_steps[::-1]:
-            # Update the weights
-            logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
-            await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
+        async def _eval_ckpt(ckpt_step: int) -> bool:
+            try:
+                logger.info(f"Evaluating model {config.model.name} at checkpoint {ckpt_step}")
+                await update_weights(admin_clients, get_step_path(config.weights_dir, ckpt_step))
 
-            # Run evals on checkpoint
-            await run_evals(
-                clients=clients,
-                eval_config=config,
-                model_config=config.model,
-                sampling_config=config.sampling,
-                evals_client=evals_client,
-                reasoning_field=config.reasoning_field,
-                output_dir=config.output_dir,
-                ckpt_step=ckpt_step,
-                resume_path=config.resume_path,
-            )
+                await run_evals(
+                    clients=clients,
+                    eval_config=config,
+                    model_name=config.model.name,
+                    sampling_config=config.sampling,
+                    evals_client=evals_client,
+                    reasoning_field=config.reasoning_field,
+                    output_dir=config.output_dir,
+                    ckpt_step=ckpt_step,
+                    resume_path=config.resume_path,
+                )
+                return True
+            except Exception:
+                logger.exception(f"Checkpoint eval failed (ckpt_step={ckpt_step})")
+                return False
+
+        logger.info(f"Evaluating {len(ckpt_steps)} weight checkpoints (steps: {', '.join(map(str, ckpt_steps))})")
+        for ckpt_step in ckpt_steps:
+            await _eval_ckpt(ckpt_step)
+
+        if config.watcher:
+            # After evaluating all currently-stable checkpoints, watch for new ones and evaluate them as they appear.
+            # Only checkpoints with step > max_evaluated_step will be picked up (strictly increasing order).
+            max_evaluated_step = max(ckpt_steps) if ckpt_steps else -1
+            while True:
+                # Only include checkpoints that have a STABLE file (indicating save completed)
+                all_ckpt_steps = sorted(
+                    [
+                        int(step_path.name.split("_")[-1])
+                        for step_path in config.weights_dir.glob("step_*")
+                        if (step_path / "STABLE").exists()
+                    ]
+                )
+                new_ckpt_steps = [step for step in all_ckpt_steps if step > max_evaluated_step]
+                if len(new_ckpt_steps) > 0:
+                    logger.info(f"New checkpoints to evaluate: {', '.join(map(str, new_ckpt_steps))}")
+                    for ckpt_step in new_ckpt_steps:
+                        await _eval_ckpt(ckpt_step)
+                        max_evaluated_step = max(max_evaluated_step, ckpt_step)
+                else:
+                    logger.info("No new checkpoints to evaluate, waiting for 10 seconds")
+                    await asyncio.sleep(10)
 
     logger.success("Eval finished!")
 

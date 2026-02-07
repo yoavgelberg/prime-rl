@@ -3,7 +3,7 @@ from time import time
 
 import zmq
 
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.config import ZMQTransportConfig
 from prime_rl.transport.types import MicroBatch, TrainingBatch
@@ -57,9 +57,10 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self, transport: ZMQTransportConfig):
         super().__init__()
-        self.runs = get_runs()
+        self.multi_run_manager = get_multi_run_manager()
         self._last_logged_time = time()
         self._last_logged_ids: list[str] | None = None
+        self._waiting_since: float | None = None
 
         self.context = zmq.Context.instance()
         self.socket: zmq.Socket = self.context.socket(zmq.PULL)
@@ -108,21 +109,42 @@ class ZMQTrainingBatchReceiver(TrainingBatchReceiver):
     def receive(self) -> list[TrainingBatch]:
         """Return at most one (oldest) pending batch per run idx; buffer newer ones for later calls."""
         batches: list[TrainingBatch] = []
-        current_ids = [self.runs.idx_2_id[idx] for idx in self.runs.used_idxs]
-        if current_ids != self._last_logged_ids or time() - self._last_logged_time > LOG_FREQ_SECONDS:
+        now = time()
+
+        # Bring any available messages into the pending buffer (non-blocking)
+        self._drain_into_pending()
+
+        # Track how long we've been waiting for any runnable batch.
+        runnable_available = False
+        for idx in self.multi_run_manager.used_idxs:
+            if self.multi_run_manager.ready_to_update[idx]:
+                continue
+            run_id = self.multi_run_manager.idx_2_id[idx].encode("utf-8")
+            if self._pending.get(run_id):
+                runnable_available = True
+                break
+
+        if runnable_available:
+            self._waiting_since = None
+        else:
+            self._waiting_since = self._waiting_since or now
+
+        current_ids = [self.multi_run_manager.idx_2_id[idx] for idx in self.multi_run_manager.used_idxs]
+        if current_ids != self._last_logged_ids or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_ids) == 0:
                 self.logger.debug(
                     "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
                 )
-            self.logger.debug(f"Listening for batches from runs {current_ids}")
+            waiting_suffix = ""
+            if self._waiting_since is not None:
+                waiting_suffix = f" (waiting {now - self._waiting_since:.1f}s)"
+            self.logger.debug(f"Listening for batches from runs {current_ids}{waiting_suffix}")
             self._last_logged_ids = current_ids
-            self._last_logged_time = time()
+            self._last_logged_time = now
 
-        self._drain_into_pending()
-
-        for idx in list(self.runs.used_idxs):
-            run_id = self.runs.idx_2_id[idx].encode("utf-8")
-            if self.runs.ready_to_update[idx]:
+        for idx in list(self.multi_run_manager.used_idxs):
+            run_id = self.multi_run_manager.idx_2_id[idx].encode("utf-8")
+            if self.multi_run_manager.ready_to_update[idx]:
                 continue
 
             per_id_batches = self._pending.get(run_id)

@@ -61,11 +61,14 @@ class PrimeMonitor(Monitor):
             return
         self.run_id = run_id
 
-        # Set up async HTTP client with background event loop
-        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
-        self._thread = Thread(target=self._run_event_loop, daemon=True)
-        self._thread.start()
-        self._client = httpx.AsyncClient(timeout=30)
+        # Set up async HTTP client with background event loop.
+        # Evals can run in a forked subprocess (see run_evals_subprocess in eval/utils.py). When a
+        # process forks, only the calling thread survives - our background thread running the
+        # event loop is not copied. The Thread object still exists but the OS thread is gone,
+        # so asyncio.run_coroutine_threadsafe() silently fails. We use register_at_fork to
+        # recreate the thread, event loop, and HTTP client in the child process.
+        self._init_async_client()
+        os.register_at_fork(after_in_child=self._reinit_after_fork)
 
         # Optionally, initialize sample logging attributes
         if config is not None and config.log_extras:
@@ -75,7 +78,7 @@ class PrimeMonitor(Monitor):
             if config.log_extras.distributions:
                 self.last_log_distributions_step = -1
 
-    def log(self, metrics: dict[str, Any]) -> None:
+    def log(self, metrics: dict[str, Any], step: int | None = None) -> None:
         self.history.append(metrics)
         if not self.is_master:
             return
@@ -113,13 +116,12 @@ class PrimeMonitor(Monitor):
         # Prepare samples for API
         samples = []
         for rollout in rollouts:
-            # Extract prompt and completion separately from the last trajectory step
-            trajectory = rollout["trajectory"]
-            if not trajectory:
+            # Extract prompt and completion from the rollout state, which includes final_env_response
+            prompt_messages = rollout.get("prompt")
+            completion_messages = rollout.get("completion")
+            trajectory = rollout.get("trajectory") or []
+            if prompt_messages is None or completion_messages is None or not trajectory:
                 continue
-            last_step = trajectory[-1]
-            prompt_messages = last_step["prompt"]
-            completion_messages = last_step["completion"]
 
             # Serialize full trajectory array (excluding large response objects and token arrays)
             trajectory_data = []
@@ -233,6 +235,8 @@ class PrimeMonitor(Monitor):
         if not hasattr(self, "_client"):
             return
 
+        self._flush()
+
         # Close the async client within the event loop
         async def _close_client() -> None:
             await self._client.aclose()
@@ -251,10 +255,39 @@ class PrimeMonitor(Monitor):
         """Destructor to ensure cleanup."""
         self.close()
 
+    def _init_async_client(self) -> None:
+        """Initialize the event loop, background thread, and HTTP client."""
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._run_event_loop, daemon=True)
+        self._thread.start()
+        self._client = httpx.AsyncClient(timeout=30)
+        self._pending_futures: list[asyncio.Future] = []
+
+    def _reinit_after_fork(self) -> None:
+        """Reinitialize thread and event loop after fork."""
+        self._init_async_client()
+
     def _run_event_loop(self) -> None:
         """Run the async event loop in a background thread."""
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
+
+    def _flush(self, timeout: float = 30.0) -> None:
+        """Wait for all pending async requests to complete."""
+        if not self.enabled or not hasattr(self, "_loop"):
+            return
+
+        if not self._pending_futures:
+            return
+
+        self.logger.debug(f"Flushing {len(self._pending_futures)} pending request(s)")
+        for future in self._pending_futures:
+            try:
+                future.result(timeout=timeout)
+            except Exception as e:
+                self.logger.debug(f"Pending request completed with error: {e}")
+
+        self._pending_futures.clear()
 
     async def _make_request_async(self, endpoint: str, data: dict[str, Any], max_retries: int = 3) -> None:
         """Make an async POST request to the Prime Intellect API with retries."""
@@ -292,7 +325,10 @@ class PrimeMonitor(Monitor):
         if not self.enabled:
             return
 
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             self._make_request_async(endpoint, data),
             self._loop,
         )
+        self._pending_futures.append(future)
+        # Clean up completed futures to avoid memory growth
+        self._pending_futures = [f for f in self._pending_futures if not f.done()]

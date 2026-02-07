@@ -1,3 +1,4 @@
+import json
 import pickle
 import shutil
 import time
@@ -18,9 +19,29 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.trainer.world import get_world
 from prime_rl.utils.logger import get_logger
+from prime_rl.utils.pathing import get_ckpt_dir
 from prime_rl.utils.utils import format_num, format_time, get_step_path
 
 DEFAULT_TIMEOUT = timedelta(seconds=600)
+
+
+def get_ckpt_disk_metrics(output_dir: Path) -> dict[str, float]:
+    """
+    Disk usage metrics for the checkpoint directory (<output_dir>/checkpoints).
+
+    Intended to be called by trainer(s) on rank 0 and included in an existing
+    monitor.log(...) call (once per step).
+    """
+    ckpt_dir = get_ckpt_dir(output_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    usage = shutil.disk_usage(str(ckpt_dir))
+    total = float(usage.total) if usage.total else 0.0
+    return {
+        "system/ckpt_disk_free_gib": usage.free / 1024**3,
+        "system/ckpt_disk_used_gib": usage.used / 1024**3,
+        "system/ckpt_disk_total_gib": usage.total / 1024**3,
+        "system/ckpt_disk_free_ratio": (usage.free / total) if total else 0.0,
+    }
 
 
 def setup_torch_distributed(timeout: timedelta = DEFAULT_TIMEOUT, enable_gloo: bool = False):
@@ -144,6 +165,63 @@ def print_benchmark(history: dict[str, list[Any]]) -> None:
     console.print(table)
 
 
+def export_benchmark_json(history: dict[str, list[Any]], output_path: Path) -> None:
+    """
+    Export benchmark results to a JSON file.
+
+    The JSON contains aggregated statistics (mean, std, min, max) for each metric.
+    """
+    history = history.copy()
+    history.pop("step", None)
+
+    # Turn metric history into pd.DataFrame
+    df = pd.DataFrame(dict(history.items()))
+    columns = {
+        "perf/mfu": "mfu",
+        "perf/throughput": "throughput",
+        "time/step": "step_time",
+        "perf/peak_memory": "peak_memory",
+    }
+    df = df[columns.keys()].rename(columns=columns)
+    df = df.iloc[1:]  # Exclude first warmup row
+
+    # Calculate statistics
+    stats = df.describe().loc[["mean", "std", "min", "max"], :]
+
+    # Get peak memory percentage
+    total_memory_gib = torch.cuda.mem_get_info()[1] / 1024**3
+    peak_memory_pct = stats["peak_memory"]["mean"] / total_memory_gib * 100
+
+    result = {
+        "mfu": {
+            "mean": float(stats["mfu"]["mean"]),
+            "std": float(stats["mfu"]["std"]),
+            "min": float(stats["mfu"]["min"]),
+            "max": float(stats["mfu"]["max"]),
+        },
+        "throughput": {
+            "mean": float(stats["throughput"]["mean"]),
+            "std": float(stats["throughput"]["std"]),
+            "min": float(stats["throughput"]["min"]),
+            "max": float(stats["throughput"]["max"]),
+        },
+        "step_time": {
+            "mean": float(stats["step_time"]["mean"]),
+            "std": float(stats["step_time"]["std"]),
+            "min": float(stats["step_time"]["min"]),
+            "max": float(stats["step_time"]["max"]),
+        },
+        "peak_memory": {
+            "gib": float(stats["peak_memory"]["mean"]),
+            "pct": float(peak_memory_pct),
+        },
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=2)
+
+
 def flexible_all_gather(tensor: Tensor) -> Tensor:
     """
     All-gather a 1D tensor between all ranks, with potentially different numbr of element per rank.
@@ -194,6 +272,15 @@ class Tensors(defaultdict):
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
             tensors = flexible_all_gather(tensors)
             assert tensors.ndim == 1, "Can only aggregate 1D tensors"
+
+            # Handle empty tensors (can happen when all rollouts in a batch fail)
+            if tensors.numel() == 0:
+                metrics[f"{key}/mean"] = float("nan")
+                metrics[f"{key}/median"] = float("nan")
+                metrics[f"{key}/std"] = float("nan")
+                metrics[f"{key}/min"] = float("nan")
+                metrics[f"{key}/max"] = float("nan")
+                continue
 
             # Compute relevant tensor statistics
             metrics[f"{key}/mean"] = tensors.mean().item()

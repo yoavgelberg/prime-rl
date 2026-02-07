@@ -33,6 +33,8 @@ from prime_rl.trainer.perf import get_perf_counter
 from prime_rl.trainer.sft.data import setup_dataloader, setup_dataset
 from prime_rl.trainer.utils import (
     MemoryProfiler,
+    export_benchmark_json,
+    get_ckpt_disk_metrics,
     print_sample,
     setup_torch_distributed,
     print_benchmark,
@@ -45,6 +47,8 @@ from prime_rl.utils.utils import clean_exit, to_col_format
 import torch.distributed as dist
 from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
 
+from torchtitan.distributed.utils import clip_grad_norm_
+
 
 @clean_exit
 @logger.catch(reraise=True)
@@ -54,11 +58,12 @@ def train(config: SFTTrainerConfig):
     logger = setup_logger(
         config.log.level,
         log_file=config.output_dir / "logs" / "trainer" / f"rank_{world.rank}.log" if config.log.file else None,
+        json_logging=config.log.json_logging,
     )
     logger.info(f"Starting SFT trainer in {world}")
 
     # Print warning if running in benchmark mode
-    if config.bench:
+    if config.bench is not None:
         logger.warning(f"Running in benchmark mode (max_steps={config.max_steps})")
 
     # Setup the monitor
@@ -91,7 +96,11 @@ def train(config: SFTTrainerConfig):
     if parallel_dims.cp_enabled:
         assert config.data.seq_len % parallel_dims.cp == 0, "Sequence length must be divisible by CP degree"
         substitute_hf_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
-        substitute_prime_rl_flash_attn(parallel_dims.world_mesh["cp"].get_group(), heads_k_stride=1)
+        substitute_prime_rl_flash_attn(
+            parallel_dims.world_mesh["cp"].get_group(),
+            heads_k_stride=1,
+            attn_impl=config.model.attn,
+        )
 
     # Set up checkpoint manager
     logger.info(f"Initializing checkpoint managers ({config.ckpt})")
@@ -114,7 +123,9 @@ def train(config: SFTTrainerConfig):
 
     # Set up the optimizer
     logger.info(f"Initializing optimizer ({config.optim})")
-    optimizer = setup_optimizer(config.optim, model, parallel_dims.world_mesh["dp_shard_cp"])
+    optimizer = setup_optimizer(
+        config.optim, list(model.named_parameters()), parallel_dims, cpu_offload=config.model.optim_cpu_offload
+    )
 
     # Set up the learning rate scheduler
     scheduler_steps = (
@@ -239,7 +250,9 @@ def train(config: SFTTrainerConfig):
                 # Forward pass
             logger.debug("Starting forward pass")
             with maybe_record_function("forward"), maybe_activation_offloading(config.model.ac_offloading):
-                logits = forward(model, input_ids, position_ids)
+                out = forward(model, input_ids, position_ids)
+
+            logits = out["logits"]
             B, L, V = logits.shape
 
             # Compute loss
@@ -281,7 +294,11 @@ def train(config: SFTTrainerConfig):
             logger.debug(micro_step_message)
 
         logger.debug(f"Clipping gradients with max norm {config.optim.max_norm}")
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optim.max_norm).full_tensor()
+        grad_norm = clip_grad_norm_(
+            model.parameters(), max_norm=config.optim.max_norm, ep_enabled=parallel_dims.ep_enabled
+        )
+        if grad_norm.device.type == "cpu":
+            grad_norm = grad_norm.to(torch.device("cuda"))
 
         logger.debug("Optimizer step")
         optimizer.step()
@@ -341,7 +358,7 @@ def train(config: SFTTrainerConfig):
                     for subset_or_split, num_tokens in dataset.num_tokens.items()
                 },
             )
-        monitor.log(progress_metrics)
+        monitor.log(progress_metrics, step=progress.step)
 
         # Log performance metrics
         perf_metrics = {
@@ -351,7 +368,7 @@ def train(config: SFTTrainerConfig):
             "perf/mfu": mfu,
             "step": progress.step,
         }
-        monitor.log(perf_metrics)
+        monitor.log(perf_metrics, step=progress.step)
 
         # Log optimizer metrics
         optim_metrics = {
@@ -359,7 +376,7 @@ def train(config: SFTTrainerConfig):
             "optim/grad_norm": grad_norm.item(),
             "step": progress.step,
         }
-        monitor.log(optim_metrics)
+        monitor.log(optim_metrics, step=progress.step)
 
         loss_log_metrics = {
             "loss/mean": batch_loss.item(),
@@ -367,7 +384,7 @@ def train(config: SFTTrainerConfig):
             "step": progress.step,
         }
         # Log tensor stats
-        monitor.log(loss_log_metrics)
+        monitor.log(loss_log_metrics, step=progress.step)
 
         # Log time metrics
         time_metrics = {
@@ -376,14 +393,19 @@ def train(config: SFTTrainerConfig):
             "time/forward_backward": forward_backward_time,
             "step": progress.step,
         }
-        monitor.log(time_metrics)
+        monitor.log(time_metrics, step=progress.step)
+
+        # Log disk metrics
+        disk_metrics = get_ckpt_disk_metrics(config.output_dir)
+        disk_metrics["step"] = progress.step
+        monitor.log(disk_metrics, step=progress.step)
 
         if is_tt_moe_model(model):
             max_vio_log_metrics = {
                 "max_vio/mean": batch_max_vio.item(),
                 "step": progress.step,
             }
-            monitor.log(max_vio_log_metrics)
+            monitor.log(max_vio_log_metrics, step=progress.step)
 
         is_first_step = False
         progress.step += 1
@@ -415,9 +437,13 @@ def train(config: SFTTrainerConfig):
     logger.info(f"Peak memory: {max(to_col_format(monitor.history)['perf/peak_memory']):.1f} GiB")
     logger.success("SFT trainer finished!")
 
-    # Optionally, print benchmark table
-    if config.bench and world.is_master:
-        print_benchmark(to_col_format(monitor.history))
+    # Optionally, print benchmark table and export JSON
+    if config.bench is not None and world.is_master:
+        history = to_col_format(monitor.history)
+        print_benchmark(history)
+        if config.bench.output_json:
+            export_benchmark_json(history, config.bench.output_json)
+            logger.info(f"Benchmark results written to {config.bench.output_json}")
 
 
 def main():

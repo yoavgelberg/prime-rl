@@ -1,7 +1,7 @@
 from pathlib import Path
 from time import time
 
-from prime_rl.trainer.runs import get_runs
+from prime_rl.trainer.runs import get_multi_run_manager
 from prime_rl.transport.base import MicroBatchReceiver, MicroBatchSender, TrainingBatchReceiver, TrainingBatchSender
 from prime_rl.transport.types import MicroBatch, TrainingBatch
 from prime_rl.utils.pathing import get_rollout_dir, get_step_path, sync_wait_for_path
@@ -35,38 +35,60 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
 
     def __init__(self) -> None:
         super().__init__()
-        self.runs = get_runs()
+        self.multi_run_manager = get_multi_run_manager()
         self._last_logged_paths: list[Path] | None = None
         self._last_logged_time = time()
+        self._waiting_since: float | None = None
+        # Track received steps per run independently of multi_run_manager.progress[idx].step
+        # This prevents duplicate reads when trainer step != orchestrator step
+        self._received_steps: dict[int, int] = {}
+
+    def _get_received_step(self, idx: int) -> int:
+        """Get the next step to receive for a run, initializing from progress if needed."""
+        if idx not in self._received_steps:
+            # Initialize from multi_run_manager.progress on first access (for checkpoint resume)
+            self._received_steps[idx] = self.multi_run_manager.progress[idx].step
+        return self._received_steps[idx]
 
     def _get_batch_path(self, idx: int) -> Path:
-        """Get the batch file path for a specific run at its current step."""
-        run_dir = self.runs.get_run_dir(idx)
+        """Get the batch file path for a specific run at its next step to receive."""
+        run_dir = self.multi_run_manager.get_run_dir(idx)
         rollout_dir = get_rollout_dir(run_dir)
-        step = self.runs.progress[idx].step
+        step = self._get_received_step(idx)
         return get_step_path(rollout_dir, step) / BATCH_FILE_NAME
 
     def can_receive(self) -> bool:
         """Check if any run has a batch file available."""
-        for idx in self.runs.used_idxs:
-            if not self.runs.ready_to_update[idx] and self._get_batch_path(idx).exists():
+        for idx in self.multi_run_manager.used_idxs:
+            if not self.multi_run_manager.ready_to_update[idx] and self._get_batch_path(idx).exists():
                 return True
         return False
 
     def receive(self) -> list[TrainingBatch]:
         """Read and return all available batches from all runs."""
         batches: list[TrainingBatch] = []
-        current_paths = [self._get_batch_path(idx) for idx in self.runs.used_idxs]
-        if current_paths != self._last_logged_paths or time() - self._last_logged_time > LOG_FREQ_SECONDS:
+        now = time()
+
+        # Track how long we've been waiting for any new batch to appear.
+        if self.can_receive():
+            self._waiting_since = None
+        else:
+            self._waiting_since = self._waiting_since or now
+
+        current_paths = [self._get_batch_path(idx) for idx in self.multi_run_manager.used_idxs]
+        if current_paths != self._last_logged_paths or now - self._last_logged_time > LOG_FREQ_SECONDS:
             if len(current_paths) == 0:
                 self.logger.debug(
                     "Did you set the output dir of the orchestrator to a run_* subdirectory of the trainer output dir?"
                 )
-            self.logger.debug(f"Looking for batches in {current_paths}")
+            waiting_suffix = ""
+            if self._waiting_since is not None:
+                waiting_suffix = f" (waiting {now - self._waiting_since:.1f}s)"
+            self.logger.debug(f"Looking for batches in {current_paths}{waiting_suffix}")
             self._last_logged_paths = current_paths
-            self._last_logged_time = time()
-        for idx in list(self.runs.used_idxs):
-            if self.runs.ready_to_update[idx]:
+            self._last_logged_time = now
+        for idx in self.multi_run_manager.used_idxs:
+            if self.multi_run_manager.ready_to_update[idx]:
                 continue
             batch_path = self._get_batch_path(idx)
             if batch_path.exists():
@@ -75,9 +97,20 @@ class FileSystemTrainingBatchReceiver(TrainingBatchReceiver):
                         batch: TrainingBatch = self.decoder.decode(f.read())
                     batch.run_idx = idx
                     batches.append(batch)
+                    # Increment received step to avoid reading the same file again
+                    self._received_steps[idx] = self._get_received_step(idx) + 1
                 except Exception as e:
                     self.logger.error(f"Error loading rollouts for run {idx}: {e}")
         return batches
+
+    def reset_run(self, idx: int) -> None:
+        """Reset received step tracking for a run index.
+
+        Called when a run is deleted and a new run takes its place.
+        The next access to _get_received_step will re-initialize from multi_run_manager.progress.
+        """
+        if idx in self._received_steps:
+            del self._received_steps[idx]
 
 
 class FileSystemMicroBatchSender(MicroBatchSender):

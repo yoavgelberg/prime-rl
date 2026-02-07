@@ -23,8 +23,12 @@ class FileSystemWeightUpdateWorker(Worker):
     def update_weights(self, weight_path: str) -> None:
         """Update weights from a specified path in shared filesystem containing a HF-compatible checkpoint."""
         # Get vLLM model runner and model
+        # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
         model_runner = self.model_runner
+<<<<<<< HEAD
         # No runnable for some cudagraph modes like PIECEWISE
+=======
+>>>>>>> xx
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
         else:
