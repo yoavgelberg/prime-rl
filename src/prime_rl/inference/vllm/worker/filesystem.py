@@ -25,10 +25,8 @@ class FileSystemWeightUpdateWorker(Worker):
         # Get vLLM model runner and model
         # When enforce_eager=True, model isn't wrapped by torch.compile so no .runnable attr
         model_runner = self.model_runner
-<<<<<<< HEAD
+
         # No runnable for some cudagraph modes like PIECEWISE
-=======
->>>>>>> xx
         if hasattr(model_runner.model, "runnable"):
             model = model_runner.model.runnable
         else:
