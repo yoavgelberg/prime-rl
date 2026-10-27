@@ -18,10 +18,16 @@ class PSFA4MetadataBuilder(FlashAttentionMetadataBuilder):
 
     def __init__(self, kv_cache_spec, layer_names, vllm_config, device):
         super().__init__(kv_cache_spec, layer_names, vllm_config, device)
+        self.record_activations = "ps_streaming" in vllm_config.additional_config
         self.aot_schedule = False
         self.window = kv_cache_spec.sliding_window
         if not self.window:
             raise ValueError("PS FA4 requires a sliding-window cache specification")
+        if self.record_activations:
+            from prime_rl.trainer.ps_backward.config import StreamConfig
+
+            if self.window != StreamConfig(**vllm_config.additional_config["ps_streaming"]).window:
+                raise ValueError("Forward and backward PS windows must agree")
         rows = vllm_config.scheduler_config.max_num_seqs
         columns = (vllm_config.model_config.max_model_len + self.block_size - 1) // self.block_size
         self.ps_pages = torch.zeros((rows, columns), device=device, dtype=torch.int32)
@@ -43,6 +49,10 @@ class PSFA4MetadataBuilder(FlashAttentionMetadataBuilder):
             output=self.ps_pages[:rows, :columns],
             fields=self.ps_fields[:, :rows],
         )
+        if self.record_activations:
+            from .ps_capture import prepare_metadata
+
+            prepare_metadata(metadata)
         return metadata
 
 
@@ -57,7 +67,9 @@ class PSFA4Impl(FlashAttentionImpl):
             raise ValueError("PS FA4 currently requires BF16/FP16 KV caches")
         self.window = self.sliding_window[0] + 1
         self._initialized_value_cache = None
+        from vllm.config import get_current_vllm_config
 
+        self.record_activations = "ps_streaming" in get_current_vllm_config().additional_config
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 
@@ -83,7 +95,7 @@ class PSFA4Impl(FlashAttentionImpl):
             layer._v_scale,
         )
         count = attn_metadata.num_actual_tokens
-        paged_ps_attention(
+        result = paged_ps_attention(
             query[:count],
             key_cache,
             value_cache,
@@ -94,7 +106,12 @@ class PSFA4Impl(FlashAttentionImpl):
             attn_metadata.max_query_len,
             self.scale,
             output=output[:count],
+            return_lse=self.record_activations,
         )
+        if self.record_activations:
+            from .ps_capture import attention_normalizers
+
+            attention_normalizers(layer.layer_name, result[1])
         return output
 
 

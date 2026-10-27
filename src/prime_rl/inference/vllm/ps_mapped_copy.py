@@ -1,0 +1,51 @@
+"""Coalesced copies through GPU execution units, leaving DMA engines available for decoding."""
+
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _mapped_rows(
+    source_address,
+    destination_address,
+    source_pitch: tl.constexpr,
+    destination_pitch: tl.constexpr,
+    WIDTH: tl.constexpr,
+    WORD: tl.constexpr,
+    SOURCE_HOST: tl.constexpr,
+    DESTINATION_HOST: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    dtype = tl.uint64 if WORD == 8 else tl.uint32 if WORD == 4 else tl.uint16 if WORD == 2 else tl.uint8
+    source, destination = source_address.to(tl.pointer_type(dtype)), destination_address.to(tl.pointer_type(dtype))
+    tiles = tl.cdiv(WIDTH, BLOCK)
+    row, tile = tl.program_id(0) // tiles, tl.program_id(0) % tiles
+    cols = tile * BLOCK + tl.arange(0, BLOCK)
+    value = tl.load(source + row * source_pitch + cols, cols < WIDTH, 0, cache_modifier=".cv" if SOURCE_HOST else ".ca")
+    tl.store(
+        destination + row * destination_pitch + cols,
+        value,
+        cols < WIDTH,
+        cache_modifier=".wt" if DESTINATION_HOST else ".wb",
+    )
+
+
+def mapped_copy(destination, source):
+    size = source.element_size()
+    width = source.shape[1] * size
+    values = (source.data_ptr(), destination.data_ptr(), source.stride(0) * size, destination.stride(0) * size, width)
+    word = 8
+    while any(value % word for value in values):
+        word //= 2
+    _mapped_rows[(source.shape[0] * triton.cdiv(width // word, 512),)](
+        source.data_ptr(),
+        destination.data_ptr(),
+        source.stride(0) * size // word,
+        destination.stride(0) * size // word,
+        width // word,
+        word,
+        not source.is_cuda,
+        not destination.is_cuda,
+        512,
+        num_warps=4,
+    )
