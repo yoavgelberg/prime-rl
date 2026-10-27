@@ -71,8 +71,8 @@ def test_recorded_fa4_vjp_uses_saved_normalizers_and_skips_attention_forward(mon
 
     from prime_rl.trainer.ps_backward.fa4 import _ps_mask, sparse_ps_plan
 
-    if fp32_adjoint and torch.cuda.get_device_capability()[0] not in (10, 11):
-        pytest.skip("Experimental FP32 accumulator conversion requires Blackwell")
+    if fp32_adjoint and torch.cuda.get_device_capability()[0] not in (9, 10, 11):
+        pytest.skip("Experimental FP32 accumulator conversion requires Hopper or Blackwell")
     torch.manual_seed(19)
     q = torch.randn(1, 4, 257, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     k = torch.randn(1, 2, 385, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True)

@@ -31,3 +31,14 @@ def test_private_fa4_api_is_pinned(monkeypatch):
     monkeypatch.setattr(config, "version", lambda _: "future-release")
     with pytest.raises(ValueError, match="pinned"):
         StreamConfig().validate_hardware("cuda", query_heads=4, kv_heads=2, head_dim=64)
+
+
+@pytest.mark.parametrize("major", [9, 10, 11])
+def test_fp32_attention_accepts_supported_accumulator_architectures(monkeypatch, major):
+    import torch
+
+    import prime_rl.trainer.ps_backward.config as config
+
+    monkeypatch.setattr(config, "version", lambda _: "4.0.0b36")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _: (major, 0))
+    StreamConfig().validate_hardware("cuda", query_heads=4, kv_heads=2, head_dim=128)

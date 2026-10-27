@@ -1,4 +1,4 @@
-"""FP32 conversion of the pinned FA4 Blackwell backward's accumulator layouts.
+"""FP32 conversion of the pinned FA4 Hopper and Blackwell accumulator layouts.
 
 Layout definitions derive from flash-attn-4 4.0.0b36 bwd_accum_tile.py.
 Copyright (c) 2025, Tri Dao. See FA4_LICENSE.txt.
@@ -71,19 +71,29 @@ def convert_fp32(
 
     if cu_seqlens is not None or seqused is not None or cu_total_m_blocks is not None or sink_tensors is not None:
         raise ValueError("FP32 PS conversion supports fixed batches without learnable sinks")
-    if dtype != cutlass.Float32 or arch // 10 not in (10, 11):
-        raise ValueError("FP32 PS conversion requires Blackwell accumulator layouts")
+    if dtype != cutlass.Float32 or arch // 10 not in (9, 10, 11):
+        raise ValueError("FP32 PS conversion requires Hopper or Blackwell accumulator layouts")
     if output.dtype != torch.float32 or accum.dtype != torch.float32:
         raise TypeError("FP32 PS conversion requires Float32 accumulators and output")
     if output.ndim != 4 or accum.ndim != 3 or output.shape[-1] != hdim:
         raise ValueError("Unexpected FA4 gradient or accumulator dimensions")
-    if not isinstance(accum_order, AccumTileOrder):
+    if arch // 10 != 9 and not isinstance(accum_order, AccumTileOrder):
         raise ValueError("FA4 must specify its accumulator storage order")
     tile_d = triton.cdiv(hdim, hdim_multiple_of) * hdim_multiple_of
     batch, length, heads, _ = output.shape
     required = triton.cdiv(length, block_size) * block_size * tile_d
     if accum.shape[:2] != (batch, heads) or accum.shape[2] < required:
         raise ValueError("FA4 accumulator does not cover the output tiles")
+    if arch // 10 == 9:
+        if accum_order is not None or use_2cta_instrs or cluster_size != 1:
+            raise ValueError("Unexpected Hopper accumulator configuration")
+        from .fa4_hopper_postprocess import convert_hopper
+
+        convert_hopper(
+            accum, output, scale, hdim, block_size, threads, atom_layout, swap_ab, hdim_multiple_of,
+            fake_mode=fake_mode,
+        )
+        return
     if accum_order == AccumTileOrder.TMEM_FRAG_2CTA and (block_size != 128 or tile_d % 8):
         raise ValueError("Invalid FA4 two-CTA tile geometry")
     if not fake_mode:

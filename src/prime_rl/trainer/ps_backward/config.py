@@ -72,5 +72,5 @@ class StreamConfig:
         major, _ = torch.cuda.get_device_capability(device)
         if major not in (9, 10, 11):
             raise ValueError("FA4-PS requires Hopper or Blackwell")
-        if self.fp32_attention and (major not in (10, 11) or query_heads <= kv_heads or head_dim == 256):
-            raise ValueError("FP32 FA4 adjoints require Blackwell, GQA and head_dim != 256")
+        if self.fp32_attention and (query_heads <= kv_heads or head_dim == 256):
+            raise ValueError("FP32 FA4 adjoints require GQA and head_dim != 256")
