@@ -89,6 +89,9 @@ class AuditWorker(PSStreamingWorker):
                     key for key in live.streams if key == item["request_id"] or key.startswith(item["request_id"] + "-")
                 )
                 expected = live.streams[request].gradients
+                missing = [name for name, value in expected.items() if value is None]
+                if missing:
+                    raise RuntimeError(f"Streaming backward omitted parameter gradients: {missing}")
                 trace = Trace(torch.tensor(item["input_ids"], device=live.model.device), item["prefix_length"])
                 live.model.zero_grad(set_to_none=True)
                 loss = backward_recorded(

@@ -4,6 +4,7 @@ import time
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from prime_rl.inference.vllm.ps_live import BackwardStage, LiveBackward
@@ -64,7 +65,10 @@ def test_scheduler_skips_unready_requests_and_bounds_submitted_gpu_stages(monkey
     assert live.stage_counts == dict(head=2, query=2, tail=2)
 
 
-def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full():
+@pytest.mark.parametrize("joint,direct,compact,cache", [
+    (False, False, False, False), (True, False, True, True), (True, True, True, True),
+])
+def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full(joint, direct, compact, cache):
     from helpers import assert_grads, dense_tape, gradients, make_trace, tiny_model
 
     from prime_rl.trainer.ps_backward.baseline import backward_full
@@ -72,7 +76,9 @@ def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full():
     from prime_rl.trainer.ps_backward.types import Trace
 
     model = tiny_model(depth=3, window=4)
-    model.recorded_joint_qkv = model.recorded_direct_weight_gradients = model.recorded_compact_kv = True
+    model.recorded_joint_qkv = joint
+    model.recorded_direct_weight_gradients = direct
+    model.recorded_compact_kv = compact
     streams, expected, traces = {}, {}, {}
     for index in range(2):
         original = make_trace(prefix=4, length=37)
@@ -83,7 +89,7 @@ def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full():
         model.zero_grad(set_to_none=True)
         tape, ropes = dense_tape(model, trace)
         streams[index] = RecordedStream(
-            model, tape, "request", 4, ropes, chunk=3, policy_version=0, tail_block_tokens=9, kv_working_cache=True
+            model, tape, "request", 4, ropes, chunk=3, policy_version=0, tail_block_tokens=9, kv_working_cache=cache
         )
     ends = [4, *range(7, 40, 3), 40]
     for offset in range(0, len(ends), 2):
@@ -93,7 +99,8 @@ def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full():
                 labels = traces[index].input_ids[start + 1 : end + 1].clone()
                 if not start:
                     labels[:3] = -100
-                stream.append(end, traces[index].input_ids[start:end], labels, policy_version=0, advance=False)
+                with stream._active(0):
+                    stream.append(end, traces[index].input_ids[start:end], labels, policy_version=0, advance=False)
         iterators = {i: s.schedule.transitions(policy_version=0, max_tokens=9) for i, s in streams.items()}
         while iterators:
             for index in list(iterators):
@@ -120,4 +127,39 @@ def test_grouped_retirement_and_interleaved_trajectory_gradients_match_full():
     for index, stream in streams.items():
         assert_grads(stream.gradients, expected[index], rtol=1e-8, atol=1e-10)
         assert stream.schedule.closed
-        assert stream.kv_cache.bytes == 0
+        assert stream.kv_cache is None or stream.kv_cache.bytes == 0
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_nested_gradient_context_preserves_new_gradients_and_restores_trajectory_pointers(direct):
+    from helpers import dense_tape, make_trace, tiny_model
+
+    from prime_rl.trainer.ps_backward.recorded_stream import RecordedStream
+
+    model = tiny_model(depth=1, window=1)
+    model.recorded_direct_weight_gradients = direct
+    trace = make_trace(prefix=4, length=7)
+    tape, ropes = dense_tape(model, trace)
+    streams = [RecordedStream(model, tape, "request", 4, ropes, chunk=4) for _ in range(2)]
+    name, parameter = next(iter(streams[0].parameters.items()))
+    with streams[0]._active(0):
+        if direct:
+            parameter.grad.fill_(1)
+        else:
+            parameter.grad = torch.ones_like(parameter)
+        first = parameter.grad
+        with streams[0]._active(0):
+            assert parameter.grad is first
+            parameter.grad.add_(2)
+        assert parameter.grad is first
+        with streams[1]._active(0):
+            if direct:
+                parameter.grad.fill_(7)
+            else:
+                parameter.grad = torch.full_like(parameter, 7)
+        assert parameter.grad is first
+        if direct:
+            assert model._ps_gradient_pointers is streams[0].gradient_pointers
+    assert parameter.grad is None
+    torch.testing.assert_close(streams[0].gradients[name], torch.full_like(parameter, 3))
+    torch.testing.assert_close(streams[1].gradients[name], torch.full_like(parameter, 7))

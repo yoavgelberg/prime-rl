@@ -1,6 +1,7 @@
 """Incremental reverse differentiation of immutable, recorded Qwen PS activations."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import torch
 
@@ -18,6 +19,8 @@ from .recorded_cache import KVWorkingSet
 from .recorded_qkv import prepare_qkv_weights, recorded_qkv
 from .recorded_values import restore_values
 from .retirement import RetirementSchedule
+
+_active_stream = ContextVar("ps_active_recorded_stream", default=None)
 
 
 class RecordedStream:
@@ -98,7 +101,12 @@ class RecordedStream:
             p._version for p in self.parameters.values()
         ):
             raise ValueError("Policy weights changed during recorded backward")
+        if _active_stream.get() is self:
+            yield
+            return
+        owner = _active_stream.set(self)
         previous = {name: p.grad for name, p in self.parameters.items()}
+        previous_pointers = getattr(self.model, "_ps_gradient_pointers", None)
         for name, p in self.parameters.items():
             p.grad = self.gradients[name]
         try:
@@ -117,6 +125,12 @@ class RecordedStream:
         finally:
             for name, p in self.parameters.items():
                 self.gradients[name], p.grad = p.grad, previous[name]
+            if self.direct_gradients:
+                if previous_pointers is None:
+                    del self.model._ps_gradient_pointers
+                else:
+                    self.model._ps_gradient_pointers = previous_pointers
+            _active_stream.reset(owner)
 
     def _linear(self, module, x, output):
         return recorded_linear(
