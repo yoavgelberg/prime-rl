@@ -12,10 +12,11 @@ import torch
 
 
 class RowCopies:
-    def __init__(self, mode="dma"):
+    def __init__(self, mode="dma", *, programs=0):
         if mode not in ("dma", "sm"):
             raise ValueError("Activation transfer mode must be dma or sm")
         self.mode = mode
+        self.programs = programs
         paths = {
             line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines() if "/libcudart.so" in line
         }
@@ -37,7 +38,11 @@ class RowCopies:
             ctypes.c_void_p,
         ]
         self.copy.restype = ctypes.c_int
-        self.runtime.cudaHostAlloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint]
+        self.runtime.cudaHostAlloc.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_size_t,
+            ctypes.c_uint,
+        ]
         self.runtime.cudaHostAlloc.restype = ctypes.c_int
         self.runtime.cudaFreeHost.argtypes = [ctypes.c_void_p]
         self.runtime.cudaFreeHost.restype = ctypes.c_int
@@ -72,7 +77,7 @@ class RowCopies:
         if mode == "sm":
             from .ps_mapped_copy import mapped_copy
 
-            mapped_copy(destination, source)
+            mapped_copy(destination, source, programs=self.programs)
         else:
             status = self.copy(
                 destination.data_ptr(),
@@ -95,6 +100,7 @@ class _Pool:
         self.free = deque((index, None) for index in range(slots))
         self.condition = threading.Condition()
         self.allocated_bytes = sum(t.numel() * t.element_size() for t in self.buffers.values())
+        self.gpu_bytes = sum(t.numel() * t.element_size() for t in self.buffers.values() if t.is_cuda)
         self.wait_seconds, self.peak_in_use = 0.0, 0
         self.slots = slots
 
@@ -110,7 +116,9 @@ class _Pool:
             self.peak_in_use = max(self.peak_in_use, self.slots - len(self.free))
         self.wait_seconds += time.perf_counter() - begin
         return dict(
-            index=index, released=released, values={name: value[index, :rows] for name, value in self.buffers.items()}
+            index=index,
+            released=released,
+            values={name: value[index, :rows] for name, value in self.buffers.items()},
         )
 
     def release(self, record):
@@ -122,19 +130,50 @@ class _Pool:
 
 
 class PinnedActivationTape:
-    def __init__(self, source, chunk, window, check, reuse_gpu=True, copy_mode="dma", independent_reads=False):
+    def __init__(
+        self,
+        source,
+        chunk,
+        window,
+        check,
+        reuse_gpu=True,
+        copy_mode="dma",
+        independent_reads=False,
+        copy_programs=0,
+        head_on_gpu=False,
+        fine_grained_events=False,
+    ):
         self.source, self.chunk, self.check = source, chunk, check
         self.on_publish = None
-        self.hidden, self.qwidth, self.kwidth = source.hidden, source.qwidth, source.kwidth
-        self.activation_dtype, self.policy_version = source.activation_dtype, source.policy_version
-        self.copies = RowCopies(copy_mode)
+        self.hidden, self.qwidth, self.kwidth = (
+            source.hidden,
+            source.qwidth,
+            source.kwidth,
+        )
+        offsets, width = {}, 0
+        for name, count in source.fields:
+            offsets[name], width = width, width + count
+        self.value_offset = offsets["qkv"] + self.qwidth + self.kwidth
+        self.activation_dtype, self.policy_version = (
+            source.activation_dtype,
+            source.policy_version,
+        )
+        self.copies = RowCopies(copy_mode, programs=copy_programs)
         self.stream = torch.cuda.Stream(device=source.final.device)
+        self.head_stream = torch.cuda.Stream(device=source.final.device) if fine_grained_events else self.stream
+        self.fine_grained_events = fine_grained_events
         if independent_reads and not reuse_gpu:
             raise ValueError("Independent ring snapshots require the GPU tape cache")
         self.read_stream = torch.cuda.Stream(device=source.final.device, priority=-1) if independent_reads else None
         self.generation_ready = {}
-        self.layer_records, self.head_records, self.pending_copies, self.prefixes = {}, {}, {}, {}
+        self.layer_records, self.head_records, self.pending_copies, self.prefixes = (
+            {},
+            {},
+            {},
+            {},
+        )
         self.reuse_gpu = reuse_gpu
+        self.head_on_gpu = head_on_gpu
         self.ring_lock = threading.Lock()
         self.latest_end, self.ring_reads = {}, {}
         self.ring_hit_bytes, self.ring_hits = 0, 0
@@ -156,10 +195,26 @@ class PinnedActivationTape:
         )
         with torch.inference_mode(False):
             self.layer_pools = [
-                _Pool(source.slots * ((source.depth - index) * halo + 5), chunk, layer_specs, self.copies.allocate)
+                _Pool(
+                    source.slots * ((source.depth - index) * halo + 5),
+                    chunk,
+                    layer_specs,
+                    self.copies.allocate,
+                )
                 for index in range(source.depth)
             ]
-            self.head_pool = _Pool(source.slots * 4, chunk, head_specs, self.copies.allocate)
+
+            def allocate_head(shape, dtype):
+                if self.head_on_gpu:
+                    return torch.empty(shape, dtype=dtype, device=source.final.device)
+                return self.copies.allocate(shape, dtype)
+
+            self.head_pool = _Pool(
+                source.slots * (2 if head_on_gpu else 4),
+                chunk,
+                head_specs,
+                allocate_head,
+            )
 
     @staticmethod
     def _pieces(start, end, capacity):
@@ -206,7 +261,11 @@ class PinnedActivationTape:
                     block_start = 0 if start < prefix else prefix + (start - prefix) // self.chunk * self.chunk
                     copying.wait_event(self.generation_ready[(request, block_start)])
                 result = {
-                    name: torch.empty((end - start, source.shape[1]), device=source.device, dtype=source.dtype)
+                    name: torch.empty(
+                        (end - start, source.shape[1]),
+                        device=source.device,
+                        dtype=source.dtype,
+                    )
                     for name, source in sources.items()
                 }
                 for target, position, count in self._pieces(start, end, self.source.capacity):
@@ -218,7 +277,7 @@ class PinnedActivationTape:
                         else:
                             from .ps_mapped_copy import mapped_copy
 
-                            mapped_copy(destination, value)
+                            mapped_copy(destination, value, programs=self.copies.programs)
                 copied = torch.cuda.Event()
                 copied.record(copying)
             if self.read_stream is not None:
@@ -245,22 +304,32 @@ class PinnedActivationTape:
         offset = self.source.requests[request] * self.source.capacity
         with torch.inference_mode(False), torch.cuda.stream(self.stream):
             self.stream.wait_event(ready)
-            for record in [*layers, head]:
+            for index, record in enumerate(layers):
                 if record["released"] is not None:
                     self.stream.wait_event(record["released"])
-            for destination_start, source_start, count in self._pieces(start, end, self.source.capacity):
-                src = slice(offset + source_start, offset + source_start + count)
-                dst = slice(destination_start, destination_start + count)
-                for index, record in enumerate(layers):
-                    values = record["values"]
+                for destination_start, source_start, count in self._pieces(start, end, self.source.capacity):
+                    src = slice(offset + source_start, offset + source_start + count)
+                    dst = slice(destination_start, destination_start + count)
                     for name, buffer in (
                         ("data", self.source.layers[index]),
                         ("norm_input", self.source.norm_inputs[2 * index]),
                         ("norm_mid", self.source.norm_inputs[2 * index + 1]),
                         ("lse", self.source.lse[index]),
                     ):
-                        self.copies(values[name][dst], buffer[src])
-                values = head["values"]
+                        self.copies(record["values"][name][dst], buffer[src])
+                record["ready"] = torch.cuda.Event()
+                record["ready"].record(self.stream)
+            if self.on_publish is not None:
+                self.on_publish(request, start, end)
+            offloaded = torch.cuda.Event()
+            offloaded.record(self.stream)
+        with torch.inference_mode(False), torch.cuda.stream(self.head_stream):
+            self.head_stream.wait_event(ready)
+            if head["released"] is not None:
+                self.head_stream.wait_event(head["released"])
+            for destination_start, source_start, count in self._pieces(start, end, self.source.capacity):
+                src = slice(offset + source_start, offset + source_start + count)
+                dst = slice(destination_start, destination_start + count)
                 for name, buffer in (
                     ("raw", self.source.norm_inputs[-1]),
                     ("normalized", self.source.final[:, self.hidden :]),
@@ -268,16 +337,24 @@ class PinnedActivationTape:
                     ("inputs", inputs),
                     ("targets", targets),
                 ):
-                    self.copies(values[name][dst], buffer[src])
-            if self.on_publish is not None:
-                self.on_publish(request, start, end)
-            event = torch.cuda.Event()
-            event.record(self.stream)
-        self.pending_copies.setdefault(request, []).append((start, event))
-        return event
+                    destination = head["values"][name][dst]
+                    if destination.is_cuda:
+                        destination.copy_(buffer[src], non_blocking=True)
+                    else:
+                        self.copies(destination, buffer[src])
+            head["ready"] = torch.cuda.Event()
+            head["ready"].record(self.head_stream)
+        self.pending_copies.setdefault(request, []).extend(((start, offloaded), (start, head["ready"])))
+        if self.fine_grained_events:
+            return head["ready"]
+        return offloaded if self.head_stream is self.stream else head["ready"]
 
     def tokens(self, request, start):
-        values = self.head_records[(request, start)]["values"]
+        record = self.head_records[(request, start)]
+        torch.cuda.current_stream().wait_event(record["ready"])
+        values = record["values"]
+        if self.head_on_gpu:
+            return values["inputs"][:, 0].clone(), values["targets"][:, 0].clone()
         result = []
         for name in ("inputs", "targets"):
             tensor = torch.empty(values[name].shape, dtype=torch.long, device=self.source.final.device)
@@ -286,6 +363,15 @@ class PinnedActivationTape:
         return tuple(result)
 
     def head(self, request, start, end, first):
+        if self.head_on_gpu:
+            record = self.head_records[(request, start)]
+            torch.cuda.current_stream().wait_event(record["ready"])
+            values = record["values"]
+            return dict(
+                raw=values["raw"],
+                normalized=values["normalized"],
+                logits=values["logits"][first:],
+            )
         cached = self._read_ring(
             request,
             start,
@@ -299,13 +385,26 @@ class PinnedActivationTape:
         if cached is not None:
             cached["logits"] = cached["logits"][first:]
             return cached
-        values = self.head_records[(request, start)]["values"]
+        record = self.head_records[(request, start)]
+        torch.cuda.current_stream().wait_event(record["ready"])
+        values = record["values"]
         result = {}
         for name in ("raw", "normalized", "logits"):
             source = values[name][first:] if name == "logits" else values[name]
             result[name] = torch.empty(source.shape, dtype=source.dtype, device=self.source.final.device)
             self.copies(result[name], source)
         return result
+
+    def ready(self, request, start, end, layer=None):
+        if layer is None:
+            return self.head_records[(request, start)]["ready"].query()
+        prefix = self.prefixes[request]
+        block_start = 0 if start < prefix else prefix + (start - prefix) // self.chunk * self.chunk
+        with self.ring_lock:
+            latest = self.latest_end.get(request, 0)
+            if self.reuse_gpu and end <= latest <= start + self.source.capacity:
+                return self.generation_ready[(request, block_start)].query()
+        return self.layer_records[(request, block_start)][layer]["ready"].query()
 
     def load_layer(self, request, index, start, end, device, fields=None, *, copy_mode=None):
         if self.reuse_gpu:
@@ -317,6 +416,9 @@ class PinnedActivationTape:
                     if name in fields:
                         buffers[name] = self.source.layers[index][:, offset : offset + width]
                     offset += width
+                if "value" in fields:
+                    begin = self.value_offset
+                    buffers["value"] = self.source.layers[index][:, begin : begin + self.kwidth]
             for name, source in (
                 ("norm_input", self.source.norm_inputs[2 * index]),
                 ("norm_mid", self.source.norm_inputs[2 * index + 1]),
@@ -334,7 +436,9 @@ class PinnedActivationTape:
                 return cached
         prefix = self.prefixes[request]
         block_start = 0 if start < prefix else prefix + (start - prefix) // self.chunk * self.chunk
-        record = self.layer_records[(request, block_start)][index]["values"]
+        published = self.layer_records[(request, block_start)][index]
+        torch.cuda.current_stream().wait_event(published["ready"])
+        record = published["values"]
         if end > block_start + record["data"].shape[0]:
             raise ValueError("A layer read must stay within its recorded block")
         rows, offset, result = slice(start - block_start, end - block_start), 0, {}
@@ -343,6 +447,10 @@ class PinnedActivationTape:
             data = torch.empty(record["data"][rows].shape, dtype=self.activation_dtype, device=device)
             self.copies(data, record["data"][rows], mode=copy_mode)
         for name, width in self.source.fields:
+            if name == "qkv" and fields is not None and "value" in fields:
+                value = record["data"][rows, offset + self.qwidth + self.kwidth : offset + width]
+                result["value"] = torch.empty(value.shape, dtype=value.dtype, device=device)
+                self.copies(result["value"], value, mode=copy_mode)
             if fields is None or name in fields:
                 if data is not None:
                     result[name] = data[:, offset : offset + width]
@@ -372,8 +480,12 @@ class PinnedActivationTape:
     def report(self):
         pools = [*self.layer_pools, self.head_pool]
         return dict(
-            pinned_activation_bytes=sum(p.allocated_bytes for p in pools),
+            pinned_activation_bytes=sum(p.allocated_bytes - p.gpu_bytes for p in pools),
+            gpu_head_staging_bytes=self.head_pool.gpu_bytes,
+            gpu_head_staging_enabled=self.head_on_gpu,
             transfer_mode=self.copies.mode,
+            copy_programs=self.copies.programs,
+            fine_grained_events=self.fine_grained_events,
             host_allocator="cudaHostAlloc with exact requested sizes, CUDA page rounding only",
             host_pool_wait_seconds=sum(p.wait_seconds for p in pools),
             layer_pool_slots=[p.slots for p in self.layer_pools],

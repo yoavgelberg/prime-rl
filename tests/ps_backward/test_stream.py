@@ -8,9 +8,32 @@ from prime_rl.trainer.ps_backward.types import Trace
 
 @pytest.mark.parametrize("chunk", [1, 3, 8])
 @pytest.mark.parametrize("layerwise", [False, True])
+@pytest.mark.parametrize(
+    "joint,direct,compact,cache",
+    [
+        (False, False, False, False),
+        (True, False, False, False),
+        (True, True, False, False),
+        (True, True, True, False),
+        (True, True, True, True),
+    ],
+)
 @pytest.mark.parametrize("depth,window,length", [(1, 1, 3), (3, 4, 31), (4, 7, 41)])
-def test_streaming_recorded_vjps_match_full_and_never_read_retired_layers(chunk, layerwise, depth, window, length):
+def test_streaming_recorded_vjps_match_full_and_never_read_retired_layers(
+    chunk,
+    layerwise,
+    depth,
+    window,
+    length,
+    joint,
+    direct,
+    compact,
+    cache,
+):
     model = tiny_model(depth=depth, window=window)
+    model.recorded_joint_qkv = joint
+    model.recorded_direct_weight_gradients = direct
+    model.recorded_compact_kv = compact
     source = make_trace(length=length)
     trace = Trace(source.input_ids, source.prefix_length, source.positions)
     tape, ropes = dense_tape(model, trace)
@@ -29,7 +52,15 @@ def test_streaming_recorded_vjps_match_full_and_never_read_retired_layers(chunk,
 
     tape.layer, tape.release_layer = layer, release_layer
     stream = RecordedStream(
-        model, tape, "request", trace.prefix_length, ropes, chunk=chunk, policy_version=3, tail_block_tokens=2 * chunk
+        model,
+        tape,
+        "request",
+        trace.prefix_length,
+        ropes,
+        chunk=chunk,
+        policy_version=3,
+        tail_block_tokens=2 * chunk,
+        kv_working_cache=cache,
     )
     n = trace.input_ids.numel() - 1
     starts = [0, *range(trace.prefix_length, n, chunk)]

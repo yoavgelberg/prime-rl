@@ -27,7 +27,14 @@ def test_strided_dma_copies_preserve_columns_and_padding(mode):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("reuse_gpu,independent_reads", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("mode", ["dma", "sm"])
-def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(reuse_gpu, independent_reads, mode):
+@pytest.mark.parametrize("fine,head_gpu", [(False, False), (True, False), (True, True)])
+def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(
+    reuse_gpu,
+    independent_reads,
+    mode,
+    fine,
+    head_gpu,
+):
     depth, chunk, prefix, window, capacity = 3, 8, 5, 13, 24
     source = SimpleNamespace(
         depth=depth,
@@ -49,7 +56,16 @@ def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(reuse_g
     inputs = torch.empty((capacity, 1), device="cuda", dtype=torch.long)
     targets = torch.empty_like(inputs)
     tape = PinnedActivationTape(
-        source, chunk, window, lambda: None, reuse_gpu=reuse_gpu, copy_mode=mode, independent_reads=independent_reads
+        source,
+        chunk,
+        window,
+        lambda: None,
+        reuse_gpu=reuse_gpu,
+        copy_mode=mode,
+        independent_reads=independent_reads,
+        fine_grained_events=fine,
+        head_on_gpu=head_gpu,
+        copy_programs=8,
     )
     schedule = RetirementSchedule(depth, window, prefix, chunk, 7)
     worker = torch.cuda.Stream()
@@ -68,10 +84,11 @@ def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(reuse_g
                     block.start + 1,
                     block.end,
                     torch.device("cuda"),
-                    ("key",),
+                    ("key", "value"),
                     copy_mode="sm" if mode == "dma" else "dma",
                 )
                 checks.append((part["key"][:, 0].clone(), expected[1:] + layer * 10000))
+                checks.append((part["value"][:, 0].clone(), expected[1:] + layer * 10000 + 123))
         elif action == "release_layer":
             tape.release_layer("r", layer, block.start, block.end)
 
@@ -83,6 +100,7 @@ def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(reuse_g
         indices = rows % capacity
         for layer, buffer in enumerate(source.layers):
             buffer[indices] = (rows + layer * 10000)[:, None].float()
+            buffer[indices, 12:14] += 123
         for buffer in [*source.norm_inputs, *source.lse, source.final, source.logits]:
             buffer[indices] = rows[:, None].float()
         inputs[indices], targets[indices] = rows[:, None], rows[:, None] + 1
@@ -94,7 +112,7 @@ def test_pinned_retirement_survives_many_ring_wraps_and_reuses_all_pools(reuse_g
             head = tape.head("r", start, end, 0)
             ids, labels = tape.tokens("r", start)
             checks.extend(((ids, rows), (labels, rows + 1)))
-            checks.append((head["raw"].to("cuda", non_blocking=True)[:, 0], rows.float()))
+            checks.append((head["raw"].to("cuda", non_blocking=True)[:, 0].clone(), rows.float()))
             tape.release_head("r", start, end)
             schedule.append(end, policy_version=7)
             schedule.advance(consume, policy_version=7)

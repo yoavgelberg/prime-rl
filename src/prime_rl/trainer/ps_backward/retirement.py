@@ -45,40 +45,62 @@ class RetirementSchedule:
         self.peak_live_token_layers = max(self.peak_live_token_layers, live)
         return block
 
-    def advance(self, consume, *, policy_version, finished=False):
-        """Commit each transition only after its derivative consumer returns."""
+    @staticmethod
+    def _groups(blocks, max_tokens):
+        group = []
+        for block in blocks:
+            if group and (
+                block.start != group[-1].end or group[0].start == 0 or block.end - group[0].start > max_tokens
+            ):
+                yield group
+                group = []
+            group.append(block)
+        if group:
+            yield group
+
+    def transitions(self, *, policy_version, finished=False, max_tokens=1):
+        """Yield dependency-ready work; commit it when the caller resumes iteration."""
         if self.closed or policy_version != self.policy_version:
             raise ValueError("Closed or stale-policy retirement schedule")
         for layer in reversed(range(self.depth)):
-            for block in self.blocks:
-                ready = layer == self.depth - 1 or block.kv_done[layer + 1]
-                if ready and not block.query_done[layer]:
-                    consume("query", block, layer)
+            ready = [
+                block
+                for block in self.blocks
+                if (layer == self.depth - 1 or block.kv_done[layer + 1]) and not block.query_done[layer]
+            ]
+            for group in self._groups(ready, max_tokens):
+                yield "query", group, layer
+                for block in group:
                     block.query_done[layer] = True
                     if block.start >= self.prefix:
                         self.frontier[layer] = block.end - 1
+            ready = []
             for block in self.blocks:
-                prefix_block = block.start == 0
-                deadline = block.end - 1 + self.window - 1
+                deadline = block.end + self.window - 2
                 if finished:
                     deadline = min(deadline, self.end - 1)
-                complete = finished if prefix_block else self.frontier[layer] >= deadline
+                complete = finished if block.start == 0 else self.frontier[layer] >= deadline
                 if block.query_done[layer] and not block.kv_done[layer] and complete:
-                    consume("kv", block, layer)
+                    ready.append(block)
+            for group in self._groups(ready, max_tokens):
+                yield "kv", group, layer
+                for block in group:
                     block.kv_done[layer] = True
-                    consume("release_layer", block, layer)
-        remaining = []
+                    yield "release_layer", [block], layer
         for block in self.blocks:
             if block.kv_done[0]:
-                consume("embedding", block, 0)
+                yield "embedding", [block], 0
                 self.retired_tokens += block.end - block.start
-            else:
-                remaining.append(block)
-        self.blocks = remaining
+        self.blocks = [block for block in self.blocks if not block.kv_done[0]]
         if finished:
             if self.blocks:
                 raise RuntimeError("EOF did not close every recorded derivative")
             self.closed = True
+
+    def advance(self, consume, *, policy_version, finished=False):
+        for action, blocks, layer in self.transitions(policy_version=policy_version, finished=finished):
+            for block in blocks:
+                consume(action, block, layer)
 
     @property
     def activation_bound(self):

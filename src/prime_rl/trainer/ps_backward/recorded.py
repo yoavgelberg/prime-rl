@@ -5,6 +5,8 @@ from contextvars import ContextVar
 
 import torch
 
+from .gradient_accumulation import accumulate_weight_gradient, weight_gradient_target
+
 _pointwise_override = ContextVar("ps_recorded_pointwise_override", default=True)
 
 
@@ -29,6 +31,7 @@ class _RecordedLinear(torch.autograd.Function):
             raise ValueError("Recorded linear shapes do not match")
         ctx.save_for_backward(inputs, cast_weight, weight)
         ctx.has_bias = bias is not None
+        ctx.gradient_target = weight_gradient_target((weight,))
         return output.detach()
 
     @staticmethod
@@ -41,7 +44,12 @@ class _RecordedLinear(torch.autograd.Function):
             dx = (
                 torch.mm(dy, weight, **options).reshape_as(inputs).to(inputs.dtype) if ctx.needs_input_grad[0] else None
             )
-            dw = torch.mm(dy.T, x, **options).to(master.dtype) if ctx.needs_input_grad[1] else None
+            dw = None
+            if ctx.needs_input_grad[1]:
+                if ctx.gradient_target is None:
+                    dw = torch.mm(dy.T, x, **options).to(master.dtype)
+                else:
+                    accumulate_weight_gradient(dy, x, ctx.gradient_target)
             db = dy.to(master.dtype).sum(0) if ctx.has_bias and ctx.needs_input_grad[4] else None
         return dx, dw, None, None, db
 
