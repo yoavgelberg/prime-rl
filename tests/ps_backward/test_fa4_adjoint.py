@@ -5,7 +5,10 @@ from prime_rl.trainer.ps_backward.fa4_adjoint import backward_fp32
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (10, 11),
+    reason="FP32 accumulator conversion requires Blackwell",
+)
 @pytest.mark.parametrize("length", [259, 2049])
 @pytest.mark.parametrize("head_dim", [64, 128])
 def test_fp32_fa4_postprocess_matches_dense_and_supports_cuda_graphs(length, head_dim):
@@ -45,7 +48,10 @@ def test_fp32_fa4_postprocess_matches_dense_and_supports_cuda_graphs(length, hea
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] not in (10, 11),
+    reason="Synthetic SM100 accumulator layouts require Blackwell",
+)
 @pytest.mark.parametrize("order", ["row_major", "tmem_frag_1cta", "tmem_frag_2cta"])
 @pytest.mark.parametrize("head_dim", [96, 128])
 def test_fp32_layout_conversion_matches_upstream_postprocessor(order, head_dim):
