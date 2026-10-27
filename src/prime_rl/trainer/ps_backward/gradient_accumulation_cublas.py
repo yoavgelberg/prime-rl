@@ -32,7 +32,7 @@ def _library():
     library.cublasCreate_v2.argtypes = [ctypes.POINTER(pointer)]
     library.cublasSetStream_v2.argtypes = [pointer, pointer]
     library.cublasSetMathMode.argtypes = [pointer, integer]
-    library.cublasSetWorkspace.argtypes = [pointer, pointer, ctypes.c_size_t]
+    library.cublasSetWorkspace_v2.argtypes = [pointer, pointer, ctypes.c_size_t]
     library.cublasGemmBatchedEx.argtypes = [
         pointer,
         integer,
@@ -59,7 +59,7 @@ def _library():
         "cublasCreate_v2",
         "cublasSetStream_v2",
         "cublasSetMathMode",
-        "cublasSetWorkspace",
+        "cublasSetWorkspace_v2",
         "cublasGemmBatchedEx",
     ):
         getattr(library, name).restype = integer
@@ -75,7 +75,7 @@ def _handle(device, stream):
     # CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION.
     _check(library.cublasSetMathMode(handle, 16))
     workspace = torch.empty(32 * 1024**2, device=device, dtype=torch.uint8)
-    _check(library.cublasSetWorkspace(handle, workspace.data_ptr(), workspace.numel()))
+    _check(library.cublasSetWorkspace_v2(handle, workspace.data_ptr(), workspace.numel()))
     return handle, workspace
 
 
