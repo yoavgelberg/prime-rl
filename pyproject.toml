@@ -43,6 +43,9 @@ readme = "README.md"
 #     "pyzmq>=27.1.0",
 # ]
 
+[project.entry-points."vllm.general_plugins"]
+prime_ps_fa4 = "prime_rl.inference.vllm.ps_fa4:register"
+
 [project.scripts]
 rl = "prime_rl.rl:main"
 trainer = "prime_rl.trainer.rl.train:main"

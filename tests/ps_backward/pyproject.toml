@@ -1,0 +1,53 @@
+[project]
+name = "prime-ps-backward"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "prime-rl",
+  "numpy==2.2.6",
+  "transformers==4.57.1",
+  "safetensors==0.6.2",
+  "pytest==8.4.2",
+  "ruff==0.14.2",
+]
+
+[project.optional-dependencies]
+cpu = ["torch==2.9.1"]
+cuda = ["torch==2.9.1", "triton==3.5.1"]
+kernel-debug = ["triton==3.5.1"]
+fa4 = ["flash-attn-4==4.0.0b36", "nvidia-cutlass-dsl==4.8.1", "quack-kernels==0.6.5"]
+
+[tool.uv]
+package = false
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
+
+[tool.uv.sources]
+prime-rl = { path = "../..", editable = true }
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cuda" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+addopts = "--strict-markers"
+markers = ["gpu: requires CUDA", "distributed: requires torchrun"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["prime_rl"]
