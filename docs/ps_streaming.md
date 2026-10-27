@@ -1,6 +1,6 @@
 # Streaming backward during PS generation
 
-Streaming backward reuses the forward values produced by vLLM, starts differentiating before rewards arrive, and delays each KV producer until every query that can use it has contributed its gradient. The attention calculation remains FA4. The gain comes from avoiding another training forward pass and moving backward work into generation, with a bounded activation lifetime.
+Streaming backward reuses the forward values produced by vLLM, starts differentiating before rewards arrive, and delays each KV producer until every query that can use it has contributed its gradient. The attention calculation remains FA4. The approach aims to avoid another training forward pass and move backward work into generation, with a bounded activation lifetime. The completed timing retest below did not establish a reliable speedup.
 
 The implementation is a reusable PS core plus a thin dense-Qwen3/vLLM adapter. It has no hard-coded model identifier, revision, hidden width, layer count, vocabulary or trace length. A different model architecture needs its own recorder and weight adapter. This is a fixed-policy cohort implementation; it does not implement a complete RL trainer, arbitrary request-slot reuse, tensor/pipeline parallelism, quantized weights or speculative decoding.
 
@@ -91,9 +91,33 @@ Use the pinned environment described in [fa4_ps.md](fa4_ps.md). For overlap timi
 | Fused pointwise/recording kernels | Triton/CUDA; validated on H200 and B200 in the research implementation |
 | Mapped-memory transfer path | Linux/NVIDIA CUDA and pinned, mapped host memory |
 | FP32 FA4 adjoint conversion | Blackwell, GQA, head dimension other than 256, pinned FA4 4.0.0b36 internals |
-| Accepted long-trace speedup | One B200; not a portability claim |
+| Long-trace timing | One B200; results varied widely, with a mean slowdown in the completed retest |
 
 `fa4_adjoint.py` confines the private FA4 hook using a context variable. `fa4_fp32_postprocess.py` isolates the Blackwell accumulator layout conversion and includes the upstream license attribution. The attention tensor-core computation remains upstream FA4. `fp32_attention=False` uses native FA4 gradient outputs and permits the Hopper path, but its long-trace accuracy/speed has not passed the accepted B200 configuration's qualification. There is no silent precision fallback.
+
+## Completed retest of the published implementation
+
+Twelve alternating-order pairs ran the published implementation on one B200 with Qwen3-1.7B, window 2048 and eight 96k/128k completions in vLLM AsyncLLM. These are fixed-policy systems measurements, not online RL. Generation plus update is constructed from measured components; startup, warmup, rewards, weight broadcast and trace serialization are excluded. Streaming cost charges generation slowdown when positive, the full drain RPC, gradient reduction and a discarded optimizer update. The full FA4 control uses the faster median of two warmed full-update variants.
+
+| Pair | Full FA4 added cost | Streaming added cost | Full FA4 cycle | Streaming cycle |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.97 s | 139.87 s | 852.03 s | 956.93 s |
+| 2 | 35.07 s | 147.41 s | 843.26 s | 955.60 s |
+| 3 | 35.05 s | 144.11 s | 851.85 s | 960.92 s |
+| 4 | 35.49 s | 4.65 s | 851.03 s | 818.82 s |
+| 5* | 35.14 s | 102.56 s | 838.30 s | 905.72 s |
+| 6 | 35.11 s | 155.56 s | 831.02 s | 951.47 s |
+| 7 | 35.14 s | 4.59 s | 851.34 s | 815.63 s |
+| 8 | 35.12 s | 17.32 s | 833.20 s | 815.40 s |
+| 9 | 35.04 s | 24.73 s | 828.16 s | 817.85 s |
+| 10 | 35.01 s | 4.66 s | 851.41 s | 817.29 s |
+| 11 | 35.09 s | 5.67 s | 847.64 s | 818.21 s |
+| 12 | 35.21 s | 6.23 s | 848.49 s | 819.52 s |
+| **Mean** | **35.12 s** | **63.11 s** | **843.98 s** | **871.11 s** |
+
+The mean streaming cycle was **3.2% slower**, despite winning seven of twelve individual pairs. Pair 5 had a roughly 12-second overlapping GPU diagnostic with unknown effect; excluding it still gives a 2.8% mean regression. Smaller diagnostic overlaps occurred in some earlier pairs. The slow and fast streaming runs produced identical token sequences across all eight requests, but native and streaming generated different sequences despite matching prompts, requested lengths and seeds. The cause of the timing variability is unproven. Six later streaming-only cohorts completed with 809.85–814.34 s generation and 4.53–4.62 s drain; this demonstrates sustained fast operation in that period, not reliability across conditions.
+
+The published fused streaming recorder rounds BF16 intermediates differently from native vLLM. An experimental rounded variant matched native on one B200 operator test but still diverged in sampled tokens on two H200 full-model requests. Same-recorded-value gradient checks do not establish exact native-forward or full-gradient parity. A short non-aligned completion also triggered an unwarmed attention-graph error in the published branch. These issues remain unresolved.
 
 ## Measured comparison with truncation
 

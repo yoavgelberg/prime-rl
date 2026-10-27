@@ -1,6 +1,6 @@
 # Refactor validation — 2026-10-26
 
-The cleaned implementation passed numerical, integration and patch-reconstruction checks. The historical 3.46x added-training-cost result remains attached to its original captured source; these new runs validate the refactor and do not repeat the eight-request timing qualification.
+The cleaned implementation passed the checks below, but the subsequent twelve-pair B200 retest did **not** reproduce a reliable speedup: streaming averaged 63.11 s added training cost and 871.11 s generation plus update, versus 35.12 s and 843.98 s for full FA4-PS. One streaming pair overlapped a GPU diagnostic for approximately 12 seconds; its effect is unknown. Results, workload and limitations are detailed in [the walkthrough](ps_streaming.md#completed-retest-of-the-published-implementation). The earlier 3.46x added-cost result belongs to the historical captured source, not to the completed retest.
 
 ## Checks completed
 
@@ -18,6 +18,10 @@ The cleaned implementation passed numerical, integration and patch-reconstructio
 | 6,144 | 0.00571620 | 0.999983662 |
 
 The numerical gate was relative L2 < 0.01 and cosine >= 0.9999. The reference differentiates the full graph using the same recorded forward values, with unfused pointwise backward. These audit runs intentionally retain an additional full tape in test support; they do not measure bounded-memory performance. The separate recomputed-HF-forward comparison remains unresolved, as documented in [the walkthrough](ps_streaming.md).
+
+## Additional numerical and integration limits
+
+The streaming recorder and native vLLM use different BF16 rounding for RMSNorm and SwiGLU. Native and streaming sampled different tokens in the long retest even though prompts, seeds and requested lengths matched; their contribution to this divergence is not isolated. A candidate that matches native on one B200 operator test still differed from native tokens in H200 full-model tests. A separately recomputed HF-style forward/backward with the same weights differed from streaming by 0.316/0.255 relative L2 on 3072/6144-token B200 traces, normalized by the streaming gradient. These are not proof of exact native-forward or end-to-end gradient parity. A short non-aligned completion also triggered an unwarmed attention-graph error; a local fallback was not published or long-trace qualified.
 
 ## Source identities and scope
 
