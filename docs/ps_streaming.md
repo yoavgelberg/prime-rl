@@ -93,7 +93,7 @@ Use the pinned environment described in [fa4_ps.md](fa4_ps.md). For overlap timi
 | FP32 FA4 adjoint conversion | Hopper/Blackwell, GQA, head dimension other than 256, pinned FA4 4.0.0b36 internals |
 | Long-trace timing | One B200; results varied widely, with a mean slowdown in the completed retest |
 
-`fa4_adjoint.py` confines the private FA4 hook using a context variable. `fa4_fp32_postprocess.py` isolates accumulator conversion and includes the upstream license attribution. Its Blackwell path reads the TMEM layouts; `fa4_hopper_postprocess.py` derives Hopper's WGMMA coordinate map from the pinned FA4 tile geometry and directly stores FP32 values. The attention tensor-core computation remains upstream FA4. `fp32_attention=False` explicitly selects native FA4 gradient outputs. Hopper FP32 qualification is pending; there is no silent precision fallback.
+`fa4_adjoint.py` confines the private FA4 hook using a context variable. `fa4_fp32_postprocess.py` isolates accumulator conversion and includes the upstream license attribution. Its Blackwell path reads the TMEM layouts; `fa4_hopper_postprocess.py` derives Hopper's WGMMA coordinate map from the pinned FA4 tile geometry and directly stores FP32 values. The attention tensor-core computation remains upstream FA4. `fp32_attention=False` explicitly selects native FA4 gradient outputs. The Hopper converter passes 17 allocated-H100 kernel/gradient/graph tests; its complete real-engine FP32 audit is pending. There is no silent precision fallback.
 
 ## Completed retest of the published implementation
 
