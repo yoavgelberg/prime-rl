@@ -35,7 +35,8 @@ class TrainingLane(LaneClient):
                       prefix_length=len(self.prefix), attention=self.args.attention, window=self.args.window,
                       thinking_retained=True, temperature=self.args.temperature,
                       top_p=self.args.top_p, top_k=self.args.top_k,
-                      peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+                      native_game_json=str(self.output / 'native/game.json'),
+                      peak_allocated_bytes=torch.cuda.max_memory_allocated(self.base.device),
                       peak_kv_bytes=self.stream.cache_bytes,
                       allocated_kv_bytes=sum(k.numel() * k.element_size() * 2 for k in self.stream.keys))
         assert len(record['tokens']) == len(record['old_tempered_logps'])

@@ -36,6 +36,13 @@ class MatchingConfig:
     activation_cpu_offload: bool = True
     validation_interval: int = 16
     validation_boards: int = 128
+    validation_greedy: bool = True
+    rollout_batch_size: int = 16
+    validation_batch_size: int = 32
+    training_workers: int = 1
+    separate_actors: bool = False
+    allow_numerical_target_miss: bool = False
+    source_sha256: str = ''
     training_likelihood: str = 'temperature-scaled full-softmax; same definition as existing trainer'
     kl_estimator: str = 'k3: exp(reference_logp-policy_logp)-(reference_logp-policy_logp)-1'
     reward_definition: str = 'pairs/8 - attempted_responses/96; resource termination configured separately'
