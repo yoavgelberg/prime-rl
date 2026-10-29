@@ -108,6 +108,12 @@ def run(args):
     shim.parse_grid_size = lambda value: tuple(map(int, value.split('x')))
     sys.modules['model_presets'] = shim
     from modes import single_normal
+    if args.action_only:
+        from common import prompts
+        prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
+After thinking, end your final response with exactly one action line:
+Action: <coordinate, e.g. cD>
+'''
     system_prompt = {'native': None, 'prompted_memory': PROMPTED_MEMORY,
                      'remember_past': REMEMBER_PAST}[args.strategy]
     if system_prompt is not None:
@@ -119,6 +125,7 @@ def run(args):
                     max_responses_per_pair=None if args.unbounded else 5, max_retries=2,
                     max_new_tokens=None if args.unlimited_response else args.max_new_tokens,
                     strategy=args.strategy, unlimited_response=args.unlimited_response,
+                    action_only=args.action_only, start_seed=args.start_seed,
                     prompted_memory_strategy=args.strategy=='prompted_memory',
                     system_prompt=system_prompt,
                     sample=args.sample, temperature=args.temperature if args.sample else 0., full_context=True,
@@ -127,13 +134,13 @@ def run(args):
                     scope='Task-qualification diagnostic, not a reproduction of published model scores')
     (output/'config.json').write_text(json.dumps(metadata, indent=2))
     rows = []
-    for seed in range(1_000_000, 1_000_000+args.count):
+    for seed in range(args.start_seed, args.start_seed+args.count):
         client.calls = []
         result = run_one_game(model='local', rows=args.rows, cols=args.cols, num_cards=None,
                               seed=seed, render='text', theme=None, assets_dir=str(source/'1_matching_pairs_new/assets'),
                               cell_size=64, out_dir=output/f'seed-{seed}',
                               max_responses=sys.maxsize if args.unbounded else 5*args.rows*args.cols//2,
-                              max_retries=2, cot_enabled=True)
+                              max_retries=2, cot_enabled=not args.action_only)
         assert result.get('error') is None, result
         with gzip.open(output/f'seed-{seed}-tokens.json.gz', 'wt') as handle:
             json.dump(client.calls, handle)
@@ -155,6 +162,7 @@ def main():
     parser.add_argument('--rows', type=int, default=4)
     parser.add_argument('--cols', type=int, default=4)
     parser.add_argument('--count', type=int, default=4)
+    parser.add_argument('--start-seed', type=int, default=1_000_000)
     parser.add_argument('--max-new-tokens', type=int, default=512)
     parser.add_argument('--sample', action='store_true')
     parser.add_argument('--temperature', type=float, default=.7)
@@ -162,6 +170,7 @@ def main():
     parser.add_argument('--top-k', type=int, default=20)
     parser.add_argument('--unbounded', action='store_true')
     parser.add_argument('--unlimited-response', action='store_true')
+    parser.add_argument('--action-only', action='store_true')
     parser.add_argument('--strategy', choices=['native','prompted_memory','remember_past'],default='native')
     run(parser.parse_args())
 
