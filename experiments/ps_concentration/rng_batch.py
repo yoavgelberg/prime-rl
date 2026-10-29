@@ -278,6 +278,9 @@ Action: <coordinate, e.g. cD>
                 requests.put((index,None))
                 client.save(row)
                 (output/f'seed-{seed}-result.json').write_text(json.dumps(row,indent=2))
+                progress_path=output/f'progress-{seed}-batch.json'
+                if progress_path.exists():
+                    progress_path.unlink()
                 print(json.dumps(row),flush=True)
                 return row
             finally:
@@ -315,7 +318,7 @@ def main():
     parser.add_argument('--window',type=int,default=1024)
     parser.add_argument('--start-seed',type=int,default=1_000_000)
     parser.add_argument('--count',type=int,default=64)
-    parser.add_argument('--max-responses',type=int,default=128)
+    parser.add_argument('--max-responses',type=int,default=96)
     parser.add_argument('--batch-size',type=int,default=4)
     parser.add_argument('--transcript-cap',type=int,default=262144)
     parser.add_argument('--temperature',type=float,default=.6)

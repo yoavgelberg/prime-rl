@@ -230,7 +230,7 @@ def main():
     parser.add_argument('--window',type=int,default=1024)
     parser.add_argument('--start-seed',type=int,default=1_000_000)
     parser.add_argument('--count',type=int,default=64)
-    parser.add_argument('--max-responses',type=int,default=128)
+    parser.add_argument('--max-responses',type=int,default=96)
     parser.add_argument('--transcript-cap',type=int,default=262144)
     parser.add_argument('--temperature',type=float,default=.6)
     parser.add_argument('--top-p',type=float,default=.95)
