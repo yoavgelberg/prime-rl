@@ -76,6 +76,7 @@ def run_batch(base, tokenizer, seeds, generation_seeds, config, *, greedy=False,
         obs, _ = env.reset(seed=int(seed))
         record = dict(board_seed=int(seed), generation_seed=int(rng), attention=config.attention, cards=config.cards,
                       queued_prefill_tokens=int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0')),
+                      full_decode_splits=int(os.environ.get('PS_CONCENTRATION_FULL_SPLITS','1')),
                       gpu_model=torch.cuda.get_device_name(base.device),source_sha256=os.environ.get('PS_CONCENTRATION_SOURCE_SHA',''),
                       window=config.window, prefix_length=len(codec.prefix), prompted=prompted,
                       tokens=[], loss_mask=[], roles=[], old_logps=[], old_tempered_logps=[],

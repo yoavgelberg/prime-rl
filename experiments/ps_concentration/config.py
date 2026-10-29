@@ -56,6 +56,7 @@ class Config:
     gpu_layout: str = 'colocated_data_parallel'
     rollout_batch_size: int = 8
     rollout_prefill_tokens: int = 0
+    full_decode_splits: int = 1
     training_workers: int = 1
     source_sha256: str = ''
 

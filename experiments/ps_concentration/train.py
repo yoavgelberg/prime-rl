@@ -72,6 +72,7 @@ def train(args):
     config.gpu_layout = 'separate_actors' if args.separate_actors else 'colocated_data_parallel'
     config.rollout_batch_size = args.batch_size
     config.rollout_prefill_tokens = int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0'))
+    config.full_decode_splits = int(os.environ.get('PS_CONCENTRATION_FULL_SPLITS','1'))
     config.training_workers = world
     config.source_sha256 = os.environ.get('PS_CONCENTRATION_SOURCE_SHA', '')
     if not config.revision and len(Path(args.model).name) == 40:
@@ -211,10 +212,10 @@ def train(args):
         if rollout_path.exists():
             rollout_path.rename(rollout_path.with_name(f'recovered-{time.time_ns()}-{rollout_path.name}'))
         save_episodes(rollout_path, records)
-        if update == 1:
+        if update == start_update+1:
             audit = parity(policy, records[:1])
             audit['exploratory_target_miss_allowed'] = args.allow_numerical_target_miss
-            (output / f'parity-rank-{rank}.json').write_text(json.dumps(audit, indent=2))
+            (output / f'parity-update-{update:04d}-rank-{rank}.json').write_text(json.dumps(audit, indent=2))
             if not accept_parity(audit, args.allow_numerical_target_miss):
                 raise RuntimeError(f'Rollout/training mismatch: {audit}')
         returns = np.array([r['native_return'] for r in records]).reshape(-1, 8)
