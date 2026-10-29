@@ -82,8 +82,10 @@ def prepare_qkv_weights(model, weights):
             for p in parameters
         )
         cached = model._recorded_qkv_weights.get(index)
-        if cached is None or cached[0] != stamp:
-            model._recorded_qkv_weights[index] = (
-                stamp,
-                torch.cat([weights[id(p)] for p in parameters]),
-            )
+        if cached is None:
+            value = torch.cat([weights[id(p)] for p in parameters])
+        else:
+            value = cached[1]
+            if cached[0] != stamp:
+                torch.cat([weights[id(p)] for p in parameters], out=value)
+        model._recorded_qkv_weights[index] = stamp, value

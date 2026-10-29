@@ -186,7 +186,7 @@
     "primary_job": 153914,
     "fallback_job": 154204,
     "ram_gib_primary": 2944,
-    "ram_gib_fallback": 1536,
+    "ram_gib_fallback": 1664,
     "forecast_observed_pdt": "2026-10-29T16:07:07-07:00",
     "primary_start_forecast_pdt": "2026-10-30T14:42:57-07:00",
     "forecast_is_guarantee": false
@@ -198,7 +198,8 @@
     "23 CPU objective/mask/controller checks passed; no GPU smoke launched",
     "Persistent native CPU integration with actual tokenizer: P=342, two native attempts, all 14 scripted assistant tokens and no forced tokens carry loss; not LLM performance",
     "Pinned public vLLM DP RPC drops nonzero-rank return values; new worker_rpc explicitly retains every engine reply",
-    "25 CPU controller/GRPO/DP orchestration checks pass"
+    "25 CPU controller/GRPO/DP orchestration checks pass",
+    "27 CPU checks pass, including real Adam update -> in-place BF16/packed-QKV buffer refresh and effective-native-weight RMS gradients"
   ],
   "implementation_remaining": [
     "Launch/configure the native vLLM engine and qualify on actual learning data; cohort driver and rank-complete RPC are implemented but not GPU-executed",
@@ -207,6 +208,7 @@
     "W&B initialization and complete metric wiring",
     "Production checkpoint/resume and launch snapshot; first-learning-data numerical audit",
     "Actual allocation and real-batch GPU fit/throughput measurement",
-    "Full PrimeRL advantage-dispatch import test needs jaxtyping in local CPU test environment; pure GRPO hook math and delayed gradients pass"
+    "Full PrimeRL advantage-dispatch import test needs jaxtyping in local CPU test environment; pure GRPO hook math and delayed gradients pass",
+    "Backward graph weight-buffer refresh is implemented and CPU-tested; real GPU graph replay after optimizer updates still needs validation on learning data"
   ]
 }

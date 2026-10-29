@@ -18,6 +18,7 @@ from .recorded import (
 from .recorded_cache import KVWorkingSet
 from .recorded_qkv import prepare_qkv_weights, recorded_qkv
 from .recorded_values import restore_values
+from .recorded_weights import prepare_weights
 from .retirement import RetirementSchedule
 
 _active_stream = ContextVar("ps_active_recorded_stream", default=None)
@@ -76,19 +77,7 @@ class RecordedStream:
             )
         self.dtype = tape.activation_dtype if hasattr(tape, "activation_dtype") else tape.final.dtype
         self.adjoint_dtype = torch.float64 if self.dtype == torch.float64 else torch.float32
-        self.weights = {}
-        for p in self.parameters.values():
-            if p.ndim == 2:
-                stamp = (
-                    p._version,
-                    p.data_ptr(),
-                    getattr(model, "_ps_update_version", 0),
-                )
-                cached = model._weight_cast_cache.get(id(p))
-                if cached is None or cached[0] != stamp:
-                    cached = stamp, p.detach().to(self.dtype)
-                    model._weight_cast_cache[id(p)] = cached
-                self.weights[id(p)] = cached[1]
+        self.weights = prepare_weights(model, self.parameters, self.dtype)
         if self.joint_qkv:
             prepare_qkv_weights(model, self.weights)
         self.versions = tuple(p._version for p in self.parameters.values())

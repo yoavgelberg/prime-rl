@@ -54,4 +54,6 @@ def load_backward_model(runner, window):
     base.to_empty(device=torch.device("cuda", torch.cuda.current_device()))
     base.tie_weights()
     copy_qwen3_weights(runner_model(runner), base)
-    return QwenPS(base, window, fp32_linear_gradients=True)
+    model = QwenPS(base, window, fp32_linear_gradients=True)
+    model.recorded_native_weight_dtype = torch.bfloat16
+    return model
