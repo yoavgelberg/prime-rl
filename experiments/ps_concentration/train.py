@@ -94,6 +94,12 @@ def train(args):
     best_return, best_update = -float('inf'), 0
     if args.resume:
         state = torch.load(args.resume, map_location=f'cuda:{rank}', weights_only=False)
+        assert state['reference'] == args.model, 'Resume must preserve the frozen starting checkpoint'
+        restored_config=state['config']
+        fixed=('attention','seed','cards','limit','max_new_tokens','temperature','top_p','denominator',
+               'learning_rate','warmup','kl_coefficient','beta1','beta2','epsilon','weight_decay','max_grad_norm')
+        assert all(restored_config[key]==getattr(config,key) for key in fixed), 'Resume changed the experiment definition'
+        assert config.attention=='full' or restored_config['window']==config.window, 'PS window is frozen'
         for master, tensor, param in zip(masters, state['masters'], policy.parameters(), strict=True):
             master.data.copy_(tensor)
             param.data.copy_(tensor)
