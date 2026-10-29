@@ -9,9 +9,10 @@ from prime_rl.trainer.ps_backward.config import StreamConfig
 from prime_rl.trainer.ps_backward.qwen3 import load_backward_model
 
 from .ps_interactive import InteractiveWorkerMixin, install_sampling_hook
+from .ps_outcome_worker import OutcomeWorkerMixin
 
 
-class PSStreamingWorker(InteractiveWorkerMixin, Worker):
+class PSStreamingWorker(OutcomeWorkerMixin, InteractiveWorkerMixin, Worker):
     def load_model(self):
         config = self.vllm_config
         hf = config.model_config.hf_config
@@ -45,7 +46,9 @@ class PSStreamingWorker(InteractiveWorkerMixin, Worker):
             raise RuntimeError("Use ps_stream_reset after draining this worker's cohort")
         _store.policy_version = policy_version
         with torch.inference_mode(False), torch.enable_grad():
-            model = load_backward_model(self.model_runner, _store.config.window)
+            model = self.ps_trainer.model if hasattr(self, "ps_trainer") else load_backward_model(
+                self.model_runner, _store.config.window
+            )
             _store.live = LiveBackward(_store, self.model_runner, model, warmup=warmup)
         _store.active = True
         return _store.report()

@@ -80,7 +80,9 @@
       "clip_epsilon": 0.2,
       "epochs_per_fresh_batch": 1,
       "on_policy_overlap": "At the unchanged rollout policy the ratio is exactly 1, so the clipped surrogate derivative equals the advantage-weighted recorded score derivative. No stale gradients or multiple PPO epochs."
-    }
+    },
+    "allow_numerical_target_miss": true,
+    "numerical_audit": "Report GO/HOLD for strict mean<=.01,p99<=.05. Exploratory continuation permits at most mean .02,p99 .15; reject larger discrepancies before an optimizer step. Initial batch receives recomputed-policy per-token audit even though KL=0 by starting-policy identity."
   },
   "execution": {
     "framework": "Extend PrimeRL orchestrator/optimizer/checkpoint/monitor interfaces with recorded-gradient backend; use the qualified PSStreamingWorker and pinned optimized vLLM source",
@@ -199,16 +201,17 @@
     "Persistent native CPU integration with actual tokenizer: P=342, two native attempts, all 14 scripted assistant tokens and no forced tokens carry loss; not LLM performance",
     "Pinned public vLLM DP RPC drops nonzero-rank return values; new worker_rpc explicitly retains every engine reply",
     "25 CPU controller/GRPO/DP orchestration checks pass",
-    "27 CPU checks pass, including real Adam update -> in-place BF16/packed-QKV buffer refresh and effective-native-weight RMS gradients"
+    "27 CPU checks pass, including real Adam update -> in-place BF16/packed-QKV buffer refresh and effective-native-weight RMS gradients",
+    "OutcomeTrainer performs one complete-batch GRPO update; two CPU Adam steps match the directly differentiated masked objective with clipping, warmup and added KL gradients",
+    "Native fused QKV/MLP weight refresh tested against a real tiny Qwen3; all storage pointers and tied embedding/head identity retained",
+    "30 CPU checks pass; optimizer worker and complete-episode KL code compile but are not GPU-executed"
   ],
   "implementation_remaining": [
-    "Launch/configure the native vLLM engine and qualify on actual learning data; cohort driver and rank-complete RPC are implemented but not GPU-executed",
-    "Connect GRPO recorded-gradient backend to PrimeRL optimizer/checkpoint orchestration and native weight synchronization",
-    "Phase-safe host activation-pool retirement plus reference/KL pass",
-    "W&B initialization and complete metric wiring",
-    "Production checkpoint/resume and launch snapshot; first-learning-data numerical audit",
-    "Actual allocation and real-batch GPU fit/throughput measurement",
-    "Full PrimeRL advantage-dispatch import test needs jaxtyping in local CPU test environment; pure GRPO hook math and delayed gradients pass",
-    "Backward graph weight-buffer refresh is implemented and CPU-tested; real GPU graph replay after optimizer updates still needs validation on learning data"
+    "Finish native engine construction and outer training/evaluation orchestration CLI",
+    "Checkpoint/resume for FP32 masters, consolidated ZeRO-1 state, policy versions, global/request RNG identities and exact configs",
+    "W&B setup_monitor integration and standard/task/systems metrics; install and pin missing framework dependencies",
+    "Capture final source/environment and install actual pilot lease-next command; no obsolete trainer or smoke autostart",
+    "Validate worker optimizer/graph/KL memory and numerical parity on first actual learning data; no separate GPU smokes",
+    "Initial same-engine full/PS baseline, 32-update pilot and saved validations, then main training/results/interventions"
   ]
 }
