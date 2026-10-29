@@ -42,8 +42,8 @@ def append_tokens(stream, tokens):
         q,k = q*cos+rotate_half(q)*sin,k*cos+rotate_half(k)*sin
         q,k,v = q.bfloat16(),k.bfloat16(),v.bfloat16()
         if stream.attention == 'ps':
-            attended_keys = torch.cat((keys,k),dim=2)
-            attended_values = torch.cat((values,v),dim=2)
+            attended_keys = torch.cat((keys.transpose(1,2),k.transpose(1,2)),dim=1).transpose(1,2)
+            attended_values = torch.cat((values.transpose(1,2),v.transpose(1,2)),dim=1).transpose(1,2)
         else:
             keys.index_copy_(2,write_slots,k)
             values.index_copy_(2,write_slots,v)
