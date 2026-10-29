@@ -13,6 +13,8 @@ Times are means in seconds. Added streaming cost is max(0, streaming generation 
 
 The ratio of mean added costs is **3.132× versus full FA4-PS** and **4.300× versus published streaming**. The measured complete cycle is **6.63% shorter** than native generation plus full FA4. Raw generation differences contribute to the cycle comparison and are reported below.
 
+The added-cost metric compares native generation with recording-enabled streaming generation, which uses different fused forward kernels. Native/streaming token identity and forward numerical parity are not established. Clipping a negative generation delta to zero prevents directly crediting faster generation, but does not isolate backward overhead: a faster streaming forward could offset backward interference. The 3.132× ratio and its gate therefore describe this defined metric across complete implementation paths, not a 3.132× speedup of backward computation in isolation. The complete-cycle comparison also includes forward-path and generation differences.
+
 The prespecified one-sided 95% bootstrap lower bound on added-cost speedup versus full FA4 is **2.0665×**. The greater-than-2× performance gate is **PASSED**. This supporting estimate resamples three GPU shards and circular blocks of three rounds within each shard (10,000 draws, seed 20261027). Three GPUs on one host do not establish reliability across independent hosts.
 
 | Round | Full FA4 added | Published streaming added | Improved streaming added | Final-window added | Full / improved |

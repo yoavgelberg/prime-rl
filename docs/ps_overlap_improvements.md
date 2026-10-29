@@ -2,6 +2,8 @@
 
 This branch adds selectable scheduling and backward-work reductions to the published FA4-PS streaming implementation. It preserves the full prefix/sliding dependency graph and the frozen-policy, delayed scalar-advantage objective. Numerical parity with a separately recomputed native forward remains unresolved as documented in [ps_streaming.md](ps_streaming.md). The complete 12-round, three-B200 campaign measures **3.13× less added training cost** than full FA4-PS, with a prespecified one-sided 95% bootstrap lower bound of **2.07×**; the measured complete cycle is **6.63% shorter**. This qualifies the performance gate within that one-host campaign. [All results and limitations](ps_overlap_b200_results.md).
 
+The added-cost metric compares different native and recording-enabled forward paths. Its generation-delta clamp does not isolate backward overhead, so the 3.13× figure is not a speedup of backward computation in isolation. See the result report for this qualification.
+
 ```python
 options = StreamConfig(
     window=2048, chunk_tokens=1024, ring_tokens=2048, max_requests=8,
