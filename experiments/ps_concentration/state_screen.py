@@ -16,8 +16,8 @@ from .rng_screen import LocalPolicy
 
 def prompt(env, variant, budget):
     text = f"""You are playing Count Recall. Answer the current query; do not explain the rules.
-There are {env.num_distinct_cards} possible values, numbered 0 through {env.num_distinct_cards-1}. Counts start at zero before the first observation. Each observation contains ONE newly dealt value and a queried value. Count the newly dealt value once, then answer how many times the queried value has been DEALT so far, INCLUDING this observation. The queried value is not an additional dealt value. Count only dealt values, never queries or values mentioned in your own response. There are {env.max_episode_length} queries. Each correct answer earns +1/{env.max_episode_length}, and each incorrect answer earns -1/{env.max_episode_length}. Maximize total reward.
-Use brief scratch work if helpful. Respond to each observation within {budget} tokens and end with exactly one line:
+There are {env.num_distinct_cards} possible values, numbered 0 through {env.num_distinct_cards-1}. Counts start at zero before the first observation. This is ONE CONTINUOUS stream across all user messages; do not reset counts between turns. Each observation contains ONE newly dealt value and a queried value. Count the newly dealt value once, then answer how many times the queried value has been DEALT so far, INCLUDING this observation. The queried value is not an additional dealt value. Count only dealt values, never queries or values mentioned in your own response. There are {env.max_episode_length} queries. Each correct answer earns +1/{env.max_episode_length}, and each incorrect answer earns -1/{env.max_episode_length}. Maximize total reward.
+Use brief scratch work if helpful. End with exactly one answer line:
 ANSWER N
 Replace N with the count. Issue your answer now, without restating the task."""
     if variant == 'icl':
@@ -47,6 +47,7 @@ def parse(text, maximum):
 
 def run(args):
     torch.manual_seed(11)
+    args.stop_at_answer = True
     client = LocalPolicy(args)
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -68,7 +69,7 @@ def run(args):
             dealt, query = map(int, observation)
             counts[dealt] += 1
             expected = int(counts[query])
-            content = f'step={step} limit={env.max_episode_length} dealt={dealt} query={query} last_reward={rewards[-1] if rewards else 0.:.8f}\nAnswer the current query now.'
+            content = f'step={step} limit={env.max_episode_length} dealt={dealt} query={query} last_reward={rewards[-1] if rewards else 0.:.8f}\nContinue the same stream. Across ALL actual observations in this episode, how many dealt values equal {query}, including the current observation? Answer now.'
             messages.append(dict(role='user', content=content))
             response = client.chat(messages)['content']
             action, error = parse(response, env.max_card_count)
