@@ -9,7 +9,7 @@ from .environment import make_env, serialize
 from .metrics import read_episodes, summarize
 
 
-CONCISE = """You are the player in a card-matching game. Play the current turn; do not explain the rules.
+CONCISE = """You are the player. Play the current turn; do not explain the rules.
 There are 52 positions, 0 through 51, and 13 ranks, 0 through 12, with four cards per rank. Each action flips ONE position. Two successive valid flips form a pair. Distinct positions of equal rank match, earn 1/26 reward, and stay revealed permanently. A mismatch earns -2/104. The observation shows the unsuccessful pair before those two cards turn face down. Permanently matched cards cannot be selected again. The game ends after all cards match or 104 flips. Maximize total reward.
 Each observation gives the step, remaining phase (next_pick=first or second), last action, last reward, and visible cards as position:rank. A missing position is face down. The first observation starts a fresh independent board.
 Issue exactly ONE move for each observation. You may use brief scratch work if helpful. Your entire response must fit in 256 tokens, including the action. Do not restate the game or discuss general strategy. End with a single action line, replacing N by your chosen position:
@@ -45,7 +45,7 @@ def prompts():
     def trace(selected):
         return '\n\n'.join(f'Observation:\n{obs}\nResponse:\nFLIP {action}' for obs, action in selected)
     start = '\n\nIllustrative turns from a DIFFERENT board:\n'
-    end = '\nThe example is over. The next observation starts the actual independent game; its card ranks are unrelated to the example.'
+    end = '\nEnd of example. The actual game starts below on an independent board.'
     return seed, dict(concise=CONCISE,
                      format_icl=CONCISE + start + trace(turns[:2]) + end,
                      game_icl=CONCISE + start + trace(turns) + '\nObservation:\n' + ending + end)
