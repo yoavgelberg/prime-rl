@@ -179,7 +179,7 @@ Action: <coordinate, e.g. cD>
 '''
     output = Path(args.output)
     output.mkdir(parents=True,exist_ok=True)
-    metadata = dict(**vars(args),model_revision=Path(args.model).name,
+    metadata = dict(vars(args),model_revision=Path(args.model).name,
                     upstream=json.loads((source/'SOURCE.json').read_text()),
                     system_prompt=prompts.build_single_system(cot_enabled=False),
                     thinking_retained=True,max_new_tokens=None,max_responses=args.max_responses,
