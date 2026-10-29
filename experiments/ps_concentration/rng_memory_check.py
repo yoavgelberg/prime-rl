@@ -15,6 +15,28 @@ from .activation_offload import activation_offload
 from .policy import load_model
 
 
+def check_offload_gradients():
+    from torch.utils.checkpoint import checkpoint
+    torch.manual_seed(19)
+    weight = torch.nn.Parameter(torch.randn(32, 32, device='cuda') / 8)
+    inputs = torch.randn(256, 32, device='cuda')
+    results = []
+    for offload in (False, True):
+        weight.grad = None
+        x = inputs.clone().requires_grad_()
+        with activation_offload([weight], min_bytes=1) if offload else nullcontext():
+            hidden = x
+            for _ in range(4):
+                hidden = checkpoint(lambda h, w: (h @ w).tanh(), hidden, weight, use_reentrant=False)
+            loss = hidden.square().mean()
+        loss.backward()
+        results.append((loss.detach(), x.grad.clone(), weight.grad.clone()))
+    errors = [float((a - b).norm() / b.norm().clamp_min(1e-12))
+              for a, b in zip(results[1], results[0], strict=True)]
+    assert max(errors) < 1e-6, errors
+    return dict(loss_input_weight_gradient_relative_l2=errors, limit=1e-6)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', required=True)
@@ -24,6 +46,8 @@ def main():
     args = parser.parse_args()
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    offload_audit = check_offload_gradients() if args.offload else None
+    print(json.dumps(dict(event='offload_gradient_audit', result=offload_audit)), flush=True)
     with gzip.open(args.record, 'rt') as handle:
         record = json.load(handle)
     assert record['attention'] == 'ps' and not record.get('censored')
@@ -65,6 +89,7 @@ def main():
                   backward_seconds=backward_seconds, mean_abs=float(diffs.mean()), p99=float(np.quantile(diffs, .99)),
                   gradient_norm=float(norm), peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                   cpu_peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                  offload_equivalence=offload_audit,
                   activation_offload=args.offload, optimizer_states_resident=True, optimizer_steps=0,
                   likelihood_temperature=1., scope='Memory, timing and numerical audit only; weights never updated')
     Path(args.output).write_text(json.dumps(result, indent=2) + '\n')
