@@ -71,6 +71,7 @@ def train(args):
     config.decode_backend = 'cuda_graph' if os.environ.get('PS_CONCENTRATION_GRAPHS') == '1' else 'eager'
     config.gpu_layout = 'separate_actors' if args.separate_actors else 'colocated_data_parallel'
     config.rollout_batch_size = args.batch_size
+    config.rollout_prefill_tokens = int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0'))
     config.training_workers = world
     config.source_sha256 = os.environ.get('PS_CONCENTRATION_SOURCE_SHA', '')
     if not config.revision and len(Path(args.model).name) == 40:

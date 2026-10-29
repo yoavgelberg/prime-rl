@@ -55,6 +55,7 @@ class Config:
     decode_backend: str = 'eager'
     gpu_layout: str = 'colocated_data_parallel'
     rollout_batch_size: int = 8
+    rollout_prefill_tokens: int = 0
     training_workers: int = 1
     source_sha256: str = ''
 

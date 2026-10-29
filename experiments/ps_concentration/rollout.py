@@ -75,6 +75,7 @@ def run_batch(base, tokenizer, seeds, generation_seeds, config, *, greedy=False,
         env = make_env(config.cards == 104)
         obs, _ = env.reset(seed=int(seed))
         record = dict(board_seed=int(seed), generation_seed=int(rng), attention=config.attention, cards=config.cards,
+                      queued_prefill_tokens=int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0')),
                       gpu_model=torch.cuda.get_device_name(base.device),source_sha256=os.environ.get('PS_CONCENTRATION_SOURCE_SHA',''),
                       window=config.window, prefix_length=len(codec.prefix), prompted=prompted,
                       tokens=[], loss_mask=[], roles=[], old_logps=[], old_tempered_logps=[],
@@ -103,7 +104,20 @@ def run_batch(base, tokenizer, seeds, generation_seeds, config, *, greedy=False,
         for _ in range(warm_tokens):
             lane['queue'].popleft()
     ticks = warm_tokens
+    chunk = int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0'))
     while not all(lane['done'] for lane in lanes):
+        if chunk and (config.attention=='full' or stream.consumed>=stream.capacity):
+            waiting = min(len(lane['queue']) for lane in lanes if not lane['done'])-1
+            if waiting >= chunk:
+                from .chunk_prefill import append_tokens
+                block=[]
+                for lane in lanes:
+                    queued=[lane['queue'].popleft() for _ in range(chunk)] if not lane['done'] else []
+                    assert all(not sample_after and position==ticks+i for i,(_,sample_after,position) in enumerate(queued))
+                    block.append([item[0] for item in queued] if queued else [codec.eos]*chunk)
+                append_tokens(stream,torch.tensor(block,device=base.device))
+                ticks += chunk
+                continue
         inputs, requesting = [], []
         for index, lane in enumerate(lanes):
             if lane['done']:

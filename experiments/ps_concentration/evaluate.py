@@ -28,7 +28,8 @@ def evaluate(args):
     model = load_model(args.checkpoint, f'cuda:{rank}')
     cards, limit = (104, 208) if args.split == 'larger' else (52, 104)
     cap = token_audit(tokenizer)[str(cards)]['required_cap']
-    config = Config(model=args.checkpoint, cards=cards, limit=limit, transcript_cap=cap, window=args.window)
+    config = Config(model=args.checkpoint, cards=cards, limit=limit, transcript_cap=cap, window=args.window,
+                    rollout_prefill_tokens=int(os.environ.get('PS_CONCENTRATION_PREFILL_TOKENS','0')))
     metadata = dict(checkpoint=args.checkpoint, split=args.split, world=world, prompted=args.prompted,
                     config=asdict(config))
     experiment = Path(args.checkpoint) / 'experiment.json'
