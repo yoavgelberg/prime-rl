@@ -142,7 +142,7 @@ class StreamingClient:
         progress=dict(seed=self.seed,attention=self.args.attention,turns=len(self.turns),
                       raw_transcript_tokens=len(self.tokens),generated_tokens=sum(len(t['sampled_ids']) for t in self.turns),
                       seconds=time.perf_counter()-self.started,latest_action=final.strip())
-        (self.output/'progress.json').write_text(json.dumps(progress,indent=2))
+        (self.output/f'progress-{self.args.start_seed}.json').write_text(json.dumps(progress,indent=2))
         with gzip.open(self.output/f'seed-{self.seed}-turns.jsonl.gz','at') as handle:
             handle.write(json.dumps(self.turns[-1])+'\n')
         print(json.dumps(progress),flush=True)
@@ -185,7 +185,7 @@ Action: <coordinate, e.g. cD>
                     thinking_retained=True,max_new_tokens=None,max_responses=None,
                     arithmetic='bf16_products_attention_fp32_residual_and_projection_accumulation',
                     scope='Base qualification; no RL or SFT',gpu=torch.cuda.get_device_name())
-    (output/'config.json').write_text(json.dumps(metadata,indent=2))
+    (output/f'config-{args.start_seed}.json').write_text(json.dumps(metadata,indent=2))
     rows=[]
     for seed in range(args.start_seed,args.start_seed+args.count):
         receipt=output/f'seed-{seed}-result.json'
@@ -211,7 +211,7 @@ Action: <coordinate, e.g. cD>
                      censored=sum(r['censored'] for r in rows),
                      completion_fraction_of_started=sum(bool(r.get('done')) for r in rows)/len(rows),
                      episodes_detail=rows)
-        (output/'summary.json').write_text(json.dumps(summary,indent=2))
+        (output/f'summary-{args.start_seed}.json').write_text(json.dumps(summary,indent=2))
         print(json.dumps(row),flush=True)
         client.stream=None
         client.pinned=None
