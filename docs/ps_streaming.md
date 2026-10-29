@@ -1,6 +1,6 @@
 # Streaming backward during PS generation
 
-Streaming backward reuses the forward values produced by vLLM, starts differentiating before rewards arrive, and delays each KV producer until every query that can use it has contributed its gradient. The attention calculation remains FA4. The approach aims to avoid another training forward pass and move backward work into generation, with a bounded activation lifetime. The completed timing retest below did not establish a reliable speedup.
+Streaming backward reuses the forward values produced by vLLM, starts differentiating before rewards arrive, and delays each KV producer until every query that can use it has contributed its gradient. The attention calculation remains FA4. The approach avoids another training forward pass and moves backward work into generation, with a bounded activation lifetime. The published-runtime retest below did not establish a reliable speedup. The later opt-in [combined optimizations](ps_overlap_improvements.md) pass the prespecified greater-than-2× added-cost gate in the [complete three-B200 campaign](ps_overlap_b200_results.md).
 
 The implementation is a reusable PS core plus a thin dense-Qwen3/vLLM adapter. It has no hard-coded model identifier, revision, hidden width, layer count, vocabulary or trace length. A different model architecture needs its own recorder and weight adapter. This is a fixed-policy cohort implementation; it does not implement a complete RL trainer, arbitrary request-slot reuse, tensor/pipeline parallelism, quantized weights or speculative decoding.
 

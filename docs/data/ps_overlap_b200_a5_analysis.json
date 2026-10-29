@@ -1,0 +1,34 @@
+{
+  "rounds": 12,
+  "point": {
+    "added_speedup_vs_full": 3.132458767730349,
+    "added_speedup_vs_original": 4.300048618558099,
+    "cycle_fraction_saved_vs_full": 0.06628068292452605
+  },
+  "one_sided_95_percent_lower": {
+    "added_speedup_vs_full": 2.0664541657773228,
+    "added_speedup_vs_original": 2.9508625183351276,
+    "cycle_fraction_saved_vs_full": 0.048520202114290756
+  },
+  "performance_threshold_passed": true,
+  "method": {
+    "cluster": "GPU shard",
+    "within_cluster": "circular blocks of three rounds, truncated to four",
+    "resamples": 10000,
+    "seed": 20261027,
+    "devices": 3
+  },
+  "mean_seconds": {
+    "full_added": 34.885283355678744,
+    "original_added": 47.888392353934854,
+    "combined_added": 11.136709512366602,
+    "full_cycle": 836.4781456672354,
+    "combined_cycle": 781.0358029209698
+  },
+  "limitations": [
+    "Three device clusters may share one host; this does not establish independent-host reliability.",
+    "Numerical qualification and native-forward parity must be assessed separately."
+  ],
+  "rl_training": false,
+  "input_sha256": "6fbb78c5dc419db4961ede5367c384dcb406b99deda23d5da7fadbb240992aaf"
+}

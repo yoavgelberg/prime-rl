@@ -1,0 +1,999 @@
+{
+  "complete": true,
+  "rounds": 12,
+  "lengths": [
+    98304,
+    131072,
+    98304,
+    131072,
+    98304,
+    131072,
+    98304,
+    131072
+  ],
+  "devices": [
+    {
+      "root": "/hai/scratch/gelberg/ps/runs/overlap-b200-shard0-a5/attempt-0",
+      "config": {
+        "first": 0,
+        "rounds": 4,
+        "job_id": "151842",
+        "host": "haic-hgx-7.stanford.edu",
+        "gpus_per_measurement": 1
+      },
+      "gpu": "name, uuid, driver_version\nNVIDIA B200, GPU-a3d464b6-83cd-0b4e-3d45-417e7a06acea, 570.133.20\n"
+    },
+    {
+      "root": "/hai/scratch/gelberg/ps/runs/overlap-b200-shard1-a5/attempt-0",
+      "config": {
+        "first": 4,
+        "rounds": 4,
+        "job_id": "151843",
+        "host": "haic-hgx-7.stanford.edu",
+        "gpus_per_measurement": 1
+      },
+      "gpu": "name, uuid, driver_version\nNVIDIA B200, GPU-8c86f251-6409-ff42-19b5-a5f66c979bf7, 570.133.20\n"
+    },
+    {
+      "root": "/hai/scratch/gelberg/ps/runs/overlap-b200-shard2-a5/attempt-0",
+      "config": {
+        "first": 8,
+        "rounds": 4,
+        "job_id": "151844",
+        "host": "haic-hgx-7.stanford.edu",
+        "gpus_per_measurement": 1
+      },
+      "gpu": "name, uuid, driver_version\nNVIDIA B200, GPU-40f85327-9a9e-df78-e1c1-720c0b07d78a, 570.133.20\n"
+    }
+  ],
+  "rows": [
+    {
+      "repeat": 0,
+      "native_generation_seconds": 817.0310686500743,
+      "full_added_seconds": 35.13879117835313,
+      "full_cycle_seconds": 852.1698598284274,
+      "full_controls_seconds": [
+        35.13879117835313,
+        36.092114652041346
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 865.9410115778446,
+          "generation_delta_seconds": 48.90994292777032,
+          "drain_rpc_seconds": 6.2059642150998116,
+          "post_generation_seconds": 7.372183534316719,
+          "added_seconds": 56.282126462087035,
+          "cycle_seconds": 873.3131951121613,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891332096,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491675271904,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 805.8836920168251,
+          "generation_delta_seconds": -11.147376633249223,
+          "drain_rpc_seconds": 6.876799798104912,
+          "post_generation_seconds": 7.005779681261629,
+          "added_seconds": 7.005779681261629,
+          "cycle_seconds": 812.8894716980867,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162825724928,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 82.63514685165137,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7942560780793428,
+      "truncated_cycle_seconds": 818.8253247281536,
+      "shard": 0
+    },
+    {
+      "repeat": 1,
+      "native_generation_seconds": 798.4260620218702,
+      "full_added_seconds": 35.14230241114274,
+      "full_cycle_seconds": 833.5683644330129,
+      "full_controls_seconds": [
+        35.14230241114274,
+        36.04725519567728
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 817.1080365367234,
+          "generation_delta_seconds": 18.68197451485321,
+          "drain_rpc_seconds": 4.673347649164498,
+          "post_generation_seconds": 4.72430720506236,
+          "added_seconds": 23.40628171991557,
+          "cycle_seconds": 821.8323437417857,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154894633472,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491276813024,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 746.3630165900104,
+          "generation_delta_seconds": -52.06304543185979,
+          "drain_rpc_seconds": 5.272779379971325,
+          "post_generation_seconds": 5.323569742962718,
+          "added_seconds": 5.323569742962718,
+          "cycle_seconds": 751.6865863329731,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162824743936,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 104.63413108373061,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7945815962739289,
+      "truncated_cycle_seconds": 800.2206436181441,
+      "shard": 0
+    },
+    {
+      "repeat": 2,
+      "native_generation_seconds": 798.4828608981334,
+      "full_added_seconds": 35.1417869431898,
+      "full_cycle_seconds": 833.6246478413232,
+      "full_controls_seconds": [
+        35.1417869431898,
+        36.04711091099307
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 837.1062332848087,
+          "generation_delta_seconds": 38.62337238667533,
+          "drain_rpc_seconds": 5.458759006112814,
+          "post_generation_seconds": 5.51827690936625,
+          "added_seconds": 44.14164929604158,
+          "cycle_seconds": 842.624510194175,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154894633472,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491213898464,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 749.3379523358308,
+          "generation_delta_seconds": -49.14490856230259,
+          "drain_rpc_seconds": 5.315012223087251,
+          "post_generation_seconds": 5.36605114582926,
+          "added_seconds": 5.36605114582926,
+          "cycle_seconds": 754.70400348166,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162822534144,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 102.82718208199367,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7947172932326794,
+      "truncated_cycle_seconds": 800.277578191366,
+      "shard": 0
+    },
+    {
+      "repeat": 3,
+      "native_generation_seconds": 793.9708621953614,
+      "full_added_seconds": 35.02460148790851,
+      "full_cycle_seconds": 828.9954636832699,
+      "full_controls_seconds": [
+        35.02460148790851,
+        36.03924148902297
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 828.0058234799653,
+          "generation_delta_seconds": 34.034961284603924,
+          "drain_rpc_seconds": 4.618428353685886,
+          "post_generation_seconds": 4.669247494544834,
+          "added_seconds": 38.70420877914876,
+          "cycle_seconds": 832.6750709745102,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154892799488,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2490962240224,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 743.4676467478275,
+          "generation_delta_seconds": -50.503215447533876,
+          "drain_rpc_seconds": 5.142673227004707,
+          "post_generation_seconds": 5.193437025882304,
+          "added_seconds": 5.193437025882304,
+          "cycle_seconds": 748.6610837737098,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162819202048,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 107.65538882138208,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7953269174322486,
+      "truncated_cycle_seconds": 795.7661891127937,
+      "shard": 0
+    },
+    {
+      "repeat": 4,
+      "native_generation_seconds": 805.6296972837299,
+      "full_added_seconds": 34.79478187300265,
+      "full_cycle_seconds": 840.4244791567326,
+      "full_controls_seconds": [
+        34.79478187300265,
+        35.87946947431192
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 890.1338053289801,
+          "generation_delta_seconds": 84.50410804525018,
+          "drain_rpc_seconds": 29.34973287116736,
+          "post_generation_seconds": 29.4057292426005,
+          "added_seconds": 113.90983728785068,
+          "cycle_seconds": 919.5395345715806,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891332096,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491622843104,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 816.8842328591272,
+          "generation_delta_seconds": 11.254535575397313,
+          "drain_rpc_seconds": 6.9913670611567795,
+          "post_generation_seconds": 9.393987574148923,
+          "added_seconds": 20.648523149546236,
+          "cycle_seconds": 826.2782204332761,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162823896064,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 69.59082331461832,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7920929999090731,
+      "truncated_cycle_seconds": 807.421790283639,
+      "shard": 1
+    },
+    {
+      "repeat": 5,
+      "native_generation_seconds": 789.1543419561349,
+      "full_added_seconds": 34.75867028487846,
+      "full_cycle_seconds": 823.9130122410133,
+      "full_controls_seconds": [
+        34.75867028487846,
+        35.87646875809878
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 811.6849305331707,
+          "generation_delta_seconds": 22.530588577035815,
+          "drain_rpc_seconds": 4.680730176158249,
+          "post_generation_seconds": 4.73160324851051,
+          "added_seconds": 27.262191825546324,
+          "cycle_seconds": 816.4165337816812,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891332096,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491538957024,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 801.814930671826,
+          "generation_delta_seconds": 12.66058871569112,
+          "drain_rpc_seconds": 7.524721363093704,
+          "post_generation_seconds": 7.577938741073012,
+          "added_seconds": 20.238527456764132,
+          "cycle_seconds": 809.392869412899,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162820443136,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 79.0939948298037,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7947121527977288,
+      "truncated_cycle_seconds": 790.9490541089326,
+      "shard": 1
+    },
+    {
+      "repeat": 6,
+      "native_generation_seconds": 809.6113400859758,
+      "full_added_seconds": 34.76116628292948,
+      "full_cycle_seconds": 844.3725063689053,
+      "full_controls_seconds": [
+        34.76116628292948,
+        35.86998063698411
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 814.2305645379238,
+          "generation_delta_seconds": 4.619224451947957,
+          "drain_rpc_seconds": 4.634850903879851,
+          "post_generation_seconds": 4.685461926739663,
+          "added_seconds": 9.30468637868762,
+          "cycle_seconds": 818.9160264646634,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891203072,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491182441184,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 772.1412481828593,
+          "generation_delta_seconds": -37.470091903116554,
+          "drain_rpc_seconds": 5.2665755450725555,
+          "post_generation_seconds": 5.3175093466416,
+          "added_seconds": 5.3175093466416,
+          "cycle_seconds": 777.4587575295009,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162825493504,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 100.40137552469969,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7932647373527288,
+      "truncated_cycle_seconds": 811.4046048233286,
+      "shard": 1
+    },
+    {
+      "repeat": 7,
+      "native_generation_seconds": 807.7195970560424,
+      "full_added_seconds": 34.779253831133246,
+      "full_cycle_seconds": 842.4988508871756,
+      "full_controls_seconds": [
+        34.779253831133246,
+        35.848847571760416
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 824.7896998533979,
+          "generation_delta_seconds": 17.070102797355503,
+          "drain_rpc_seconds": 4.582035913597792,
+          "post_generation_seconds": 4.632978782989085,
+          "added_seconds": 21.703081580344588,
+          "cycle_seconds": 829.422678636387,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891332096,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491528471264,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 763.5784296132624,
+          "generation_delta_seconds": -44.14116744277999,
+          "drain_rpc_seconds": 7.1224839659407735,
+          "post_generation_seconds": 7.173847917933017,
+          "added_seconds": 7.173847917933017,
+          "cycle_seconds": 770.7522775311954,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162821106688,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 93.89120522374287,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.792545978911221,
+      "truncated_cycle_seconds": 809.5121430349536,
+      "shard": 1
+    },
+    {
+      "repeat": 8,
+      "native_generation_seconds": 812.6763113928027,
+      "full_added_seconds": 34.808464425150305,
+      "full_cycle_seconds": 847.484775817953,
+      "full_controls_seconds": [
+        34.808464425150305,
+        35.85510635515675
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 855.7469560760073,
+          "generation_delta_seconds": 43.07064468320459,
+          "drain_rpc_seconds": 8.374199789948761,
+          "post_generation_seconds": 8.42963034613058,
+          "added_seconds": 51.50027502933517,
+          "cycle_seconds": 864.1765864221379,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154892380672,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491612357344,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 846.5891935303807,
+          "generation_delta_seconds": 33.91288213757798,
+          "drain_rpc_seconds": 7.367928119841963,
+          "post_generation_seconds": 7.420447806362063,
+          "added_seconds": 41.33332994394004,
+          "cycle_seconds": 854.0096413367428,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162823351296,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 79.1688987291418,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.790122068952769,
+      "truncated_cycle_seconds": 814.4664334617555,
+      "shard": 2
+    },
+    {
+      "repeat": 9,
+      "native_generation_seconds": 790.3800868978724,
+      "full_added_seconds": 34.741727099288255,
+      "full_cycle_seconds": 825.1218139971606,
+      "full_controls_seconds": [
+        34.741727099288255,
+        35.88229919830337
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 873.9118377435952,
+          "generation_delta_seconds": 83.53175084572285,
+          "drain_rpc_seconds": 12.411195690277964,
+          "post_generation_seconds": 12.503205840941519,
+          "added_seconds": 96.03495668666437,
+          "cycle_seconds": 886.4150435845368,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154893138432,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491570414304,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 750.5178514420986,
+          "generation_delta_seconds": -39.86223545577377,
+          "drain_rpc_seconds": 5.301000350154936,
+          "post_generation_seconds": 5.351532265543938,
+          "added_seconds": 5.351532265543938,
+          "cycle_seconds": 755.8693837076426,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162823582720,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 110.41555483685806,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7900429931469262,
+      "truncated_cycle_seconds": 792.1701298910193,
+      "shard": 2
+    },
+    {
+      "repeat": 10,
+      "native_generation_seconds": 793.7811773200519,
+      "full_added_seconds": 34.837727507110685,
+      "full_cycle_seconds": 828.6189048271626,
+      "full_controls_seconds": [
+        34.837727507110685,
+        35.85987657867372
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 833.2293558828533,
+          "generation_delta_seconds": 39.44817856280133,
+          "drain_rpc_seconds": 4.476489443331957,
+          "post_generation_seconds": 4.5273988782428205,
+          "added_seconds": 43.97557744104415,
+          "cycle_seconds": 837.7567547610961,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154894762496,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491528471264,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 749.5454507959075,
+          "generation_delta_seconds": -44.23572652414441,
+          "drain_rpc_seconds": 5.307440299075097,
+          "post_generation_seconds": 5.358236685860902,
+          "added_seconds": 5.358236685860902,
+          "cycle_seconds": 754.9036874817684,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162823076864,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 109.20549943158403,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.7902164948172867,
+      "truncated_cycle_seconds": 795.5713938148692,
+      "shard": 2
+    },
+    {
+      "repeat": 11,
+      "native_generation_seconds": 802.2509419806302,
+      "full_added_seconds": 34.69412694405764,
+      "full_cycle_seconds": 836.9450689246878,
+      "full_controls_seconds": [
+        34.69412694405764,
+        35.84751128498465
+      ],
+      "variants": {
+        "original": {
+          "generation_seconds": 842.1518263062462,
+          "generation_delta_seconds": 39.90088432561606,
+          "drain_rpc_seconds": 8.483332574833184,
+          "post_generation_seconds": 8.534951434936374,
+          "added_seconds": 48.435835760552436,
+          "cycle_seconds": 850.6867777411826,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": null,
+          "optimizations": null,
+          "peak_allocated_bytes": 154891332096,
+          "pinned_bytes": 547889872896,
+          "transfer_bytes": {
+            "h2d": 2491486528224,
+            "d2h": 2308244476512
+          },
+          "gpu_credit_wait_seconds": null,
+          "peak_gpu_stages": null
+        },
+        "combined": {
+          "generation_seconds": 750.4934825459495,
+          "generation_delta_seconds": -51.75745943468064,
+          "drain_rpc_seconds": 5.279417804908007,
+          "post_generation_seconds": 5.330169786233455,
+          "added_seconds": 5.330169786233455,
+          "cycle_seconds": 755.823652332183,
+          "fa4_new_cache_entries": [
+            0,
+            0
+          ],
+          "eager_stage_calls": 0,
+          "stage_counts": {
+            "head": 904,
+            "query": 19048,
+            "kv": 18592,
+            "release_layer": 18592,
+            "embedding": 448,
+            "tail": 224,
+            "finalize": 8
+          },
+          "optimizations": {
+            "joint_qkv": true,
+            "direct_weight_gradients": true,
+            "weight_gradient_backend": "cublas",
+            "compact_kv": true,
+            "kv_cache": true,
+            "stage_scheduling": true
+          },
+          "peak_allocated_bytes": 162825319424,
+          "pinned_bytes": 527572140032,
+          "transfer_bytes": {
+            "h2d": 2086812634752,
+            "d2h": 1738987088384
+          },
+          "gpu_credit_wait_seconds": 109.18321911385283,
+          "peak_gpu_stages": 4
+        }
+      },
+      "matching_original_candidate_sequences": 8,
+      "truncated_added_seconds": 1.791062043979764,
+      "truncated_cycle_seconds": 804.0420040246099,
+      "shard": 2
+    }
+  ],
+  "means": {
+    "full_added_seconds": 34.885283355678744,
+    "full_cycle_seconds": 836.4781456672354,
+    "original": {
+      "generation_seconds": 841.170006761793,
+      "post_generation_seconds": 8.311247903698435,
+      "added_seconds": 47.888392353934854,
+      "cycle_seconds": 849.4812546654915,
+      "added_speedup_vs_full": 0.7284705466378497,
+      "cycle_fraction_saved_vs_full": -0.015545067214976616,
+      "wins_vs_full": 4
+    },
+    "combined": {
+      "generation_seconds": 774.7180939443255,
+      "post_generation_seconds": 6.3177089766444015,
+      "added_seconds": 11.136709512366602,
+      "cycle_seconds": 781.0358029209698,
+      "added_speedup_vs_full": 3.1324587677303493,
+      "cycle_fraction_saved_vs_full": 0.06628068292452605,
+      "wins_vs_full": 11
+    },
+    "combined_added_speedup_vs_original": 4.300048618558099
+  },
+  "rl_training": false
+}

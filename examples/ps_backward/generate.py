@@ -26,7 +26,25 @@ async def run(args):
     records = [json.loads(row) for row in Path(args.prompts).read_text().splitlines() if row.strip()]
     if not records:
         raise ValueError("Provide at least one prompt")
+    optimized = (
+        dict(
+            joint_qkv=True,
+            direct_weight_gradients=True,
+            weight_gradient_backend="cublas",
+            compact_kv=True,
+            kv_cache=True,
+            fine_grained_events=True,
+            gpu_head_staging=True,
+            stage_scheduling=True,
+            copy_programs=8,
+            gpu_stages_in_flight=4,
+            backward_batch_tokens=4096,
+        )
+        if args.optimized
+        else {}
+    )
     options = StreamConfig(
+        **optimized,
         window=args.window,
         chunk_tokens=args.chunk,
         ring_tokens=2 * args.chunk,
@@ -132,11 +150,16 @@ def main():
     parser.add_argument("--chunk", type=int, default=1024)
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument(
+        "--optimized", action="store_true", help="Select the combined B200-qualified streaming settings"
+    )
+    parser.add_argument(
         "--native-attention-gradients", action="store_true", help="Hopper-compatible, not long-trace qualified"
     )
     parser.add_argument("--worker", default="prime_rl.inference.vllm.ps_streaming_worker.PSStreamingWorker")
     parser.add_argument("--audit", action="store_true", help="Requires the test-only AuditWorker")
     args = parser.parse_args()
+    if args.optimized and not args.streaming:
+        parser.error("--optimized requires --streaming")
     # The pinned PS fork reads these settings at import time.
     os.environ["SWF"] = str(args.window)
     asyncio.run(run(args))
