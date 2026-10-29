@@ -91,7 +91,7 @@ Use the pinned environment described in [fa4_ps.md](fa4_ps.md). For overlap timi
 | Fused pointwise/recording kernels | Triton/CUDA; validated on H200 and B200 in the research implementation |
 | Mapped-memory transfer path | Linux/NVIDIA CUDA and pinned, mapped host memory |
 | FP32 FA4 adjoint conversion | Hopper/Blackwell, GQA, head dimension other than 256, pinned FA4 4.0.0b36 internals |
-| Long-trace timing | One B200; results varied widely, with a mean slowdown in the completed retest |
+| Long-trace timing | Published runtime: one-B200 retest showed a mean slowdown. Opt-in combined path: complete three-B200 campaign passes its greater-than-2× added-cost gate; independent-host validation remains open. |
 
 `fa4_adjoint.py` confines the private FA4 hook using a context variable. `fa4_fp32_postprocess.py` isolates accumulator conversion and includes the upstream license attribution. Its Blackwell path reads the TMEM layouts; `fa4_hopper_postprocess.py` derives Hopper's WGMMA coordinate map from the pinned FA4 tile geometry and directly stores FP32 values. The attention tensor-core computation remains upstream FA4. `fp32_attention=False` explicitly selects native FA4 gradient outputs. The Hopper converter passes 17 allocated-H100 kernel/gradient/graph tests and the complete H200 real-engine FP32 qualification. There is no silent precision fallback.
 

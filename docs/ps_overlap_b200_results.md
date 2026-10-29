@@ -60,6 +60,13 @@ The prespecified one-sided 95% bootstrap lower bound on added-cost speedup versu
 | 10 | 828.62 | 837.76 | 754.90 | 795.57 | 4.53 |
 | 11 | 836.95 | 850.69 | 755.82 | 804.04 | 8.53 |
 
+| Implementation | Host-to-GPU TB | GPU-to-host TB | Total transferred TB | Pinned-host GiB | Peak GPU allocation GiB |
+|---|---:|---:|---:|---:|---:|
+| Published streaming | 2.491 | 2.308 | 4.800 | 510.26 | 144.26 |
+| Improved streaming | 2.087 | 1.739 | 3.826 | 491.34 | 151.64 |
+
+Transfer counters verify less copy work; the bundle comparison does not isolate the timing benefit of each optimization. GPU head staging trades additional GPU allocation for reduced transfers. Both implementations report zero eager backward-stage fallbacks and zero new FA4 cache entries during measured generation. The improved path wins on added training cost in 11 of 12 rounds; the remaining slow observation is retained.
+
 The frozen candidate runtime is `9e8edea1bc35c2dd5d9662274763b4e9bac07ecb`; capture SHA256 `cc91c4b228fd21a4e3f8a5ce95e17d24200cbe9bc20aee963ba27fac4e251114` (645 verified files). Jobs 151842/151843/151844 ran rounds 0–3/4–7/8–11, using rotated native/published/improved orders. The later gradient-scope, memory and coalesced-field patches are excluded from this comparison.
 
 The implementation retains FA4 attention and optimizes the surrounding streaming backward: joint QKV projection/input-normalization VJPs, direct FP32 gradient accumulation, compact KV reuse, per-layer readiness, GPU head staging, bounded transfers and GPU work credits. It preserves complete PS dependencies.
