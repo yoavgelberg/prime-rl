@@ -103,7 +103,7 @@ def generate(args):
     plt.figure(figsize=(7,4))
     curves = []
     pilot_rows = []
-    for path in sorted(root.rglob('validation.jsonl')):
+    for path in sorted(root.glob('*-seed*/validation.jsonl')):
         rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         if not rows:
             continue
@@ -117,7 +117,7 @@ def generate(args):
     plt.tight_layout(); plt.savefig(out/'return-vs-episodes.png', dpi=180); plt.close()
     plt.figure(figsize=(7,4))
     training_rows=[]
-    for path in sorted(root.rglob('updates.jsonl')):
+    for path in sorted(root.glob('*-seed*/updates.jsonl')):
         rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         if rows:
             label=path.parent.name
