@@ -29,7 +29,7 @@ class LaneCache:
 
     @property
     def cache_bytes(self):
-        used = min(len(self.owner.tokens),self.shared.capacity)
+        used = min(self.owner.consumed,self.shared.capacity)
         return sum(k.shape[1]*used*k.shape[-1]*k.element_size()*2 for k in self.keys)
 
 
@@ -61,6 +61,9 @@ class BatchDecoder:
         native_eos = self.base.generation_config.eos_token_id
         self.eos = set(native_eos if isinstance(native_eos,list) else [native_eos])
         self.newline = self.tokenizer.encode('\n',add_special_tokens=False)[0]
+        thinking_end=self.tokenizer.encode('</think>',add_special_tokens=False)
+        assert len(thinking_end)==1
+        self.thinking_end=thinking_end[0]
 
     def _fail(self,lane,error):
         lane.done = True
@@ -94,23 +97,45 @@ class BatchDecoder:
             self._fail(lane,error)
             return
         lane.sampled, lane.sample_logps = [],[]
+        lane.final_start = None
         lane.turn_start = len(lane.tokens)
         lane.turn_started = time.perf_counter()
 
-    def _emit(self,index,logits):
-        lane = self.clients[index]
-        try:
-            lane._check_capacity(1)
-        except TranscriptCapacity as error:
-            self._fail(lane,error)
+    def _emit_many(self,indices,logits):
+        active=[]
+        for index in indices:
+            lane=self.clients[index]
+            try:
+                lane._check_capacity(1)
+            except TranscriptCapacity as error:
+                self._fail(lane,error)
+                continue
+            active.append(index)
+        if not active:
             return
-        token, logp = lane._sample(logits[None])
+        raw=logits[active].float()
+        values,choices=(raw/self.args.temperature).topk(self.args.top_k,dim=-1)
+        probs=values.softmax(-1)
+        probs.masked_fill_(probs.cumsum(-1)-probs>=self.args.top_p,0.)
+        probs/=probs.sum(-1,keepdim=True)
+        selected=torch.stack([torch.multinomial(probs[row],1,generator=self.clients[index].rng)[0]
+                              for row,index in enumerate(active)])
+        tokens=choices.gather(1,selected[:,None])[:,0]
+        logps=raw.gather(1,tokens[:,None])[:,0]-raw.logsumexp(-1)
+        pairs=torch.stack((tokens.float(),logps),dim=-1).tolist()
+        for index,(token,logp) in zip(active,pairs,strict=True):
+            self._emit(index,int(token),logp)
+
+    def _emit(self,index,token,logp):
+        lane = self.clients[index]
         lane.sampled.append(token)
         lane.sample_logps.append(logp)
+        if token==self.thinking_end:
+            lane.final_start=len(lane.sampled)
         stop = 'eos' if token in self.eos else None
-        if stop is None and token==self.newline:
-            text = self.tokenizer.decode(lane.sampled,skip_special_tokens=True)
-            if '</think>' in text and re.search(r'(?:^|\n)Action:\s*[a-z][A-Z][ \t]*\n',text.rsplit('</think>',1)[-1]):
+        if stop is None and token==self.newline and lane.final_start is not None:
+            text = self.tokenizer.decode(lane.sampled[lane.final_start:],skip_special_tokens=True)
+            if re.search(r'(?:^|\n)Action:\s*[a-z][A-Z][ \t]*\n',text):
                 stop = 'action_line'
         position = len(lane.tokens)
         self._append(lane,[token],'assistant',stop is None)
@@ -159,7 +184,9 @@ class BatchDecoder:
             lane.old_logps=[None]*len(tokens)
             lane.request=request
             lane.sampled,lane.sample_logps=[],[]
+            lane.final_start=None
             lane.turn_start=len(tokens)
+            lane.consumed=len(tokens)
             lane.turn_started=time.perf_counter()
             rendered.append(tokens)
         assert all(tokens==rendered[0] for tokens in rendered)
@@ -169,8 +196,7 @@ class BatchDecoder:
             lane.stream=LaneCache(shared,index,lane)
         logits=shared.prefill(torch.tensor(rendered,device=self.base.device))
         pinned=[k[:,:,:shared.prefix].clone() for k in shared.keys]
-        for index in range(len(self.clients)):
-            self._emit(index,logits[index])
+        self._emit_many(list(range(len(self.clients))),logits)
         ticks=len(rendered[0])
         while not all(lane.done for lane in self.clients):
             while any(not lane.done and not lane.queue for lane in self.clients):
@@ -190,13 +216,13 @@ class BatchDecoder:
                     continue
                 token,sample_after,position=lane.queue.popleft()
                 assert position==ticks,(index,position,ticks)
+                lane.consumed=position+1
                 inputs.append(token)
                 if sample_after:
                     requesting.append(index)
             logits=shared.step(torch.tensor(inputs,device=self.base.device))
             ticks+=1
-            for index in requesting:
-                self._emit(index,logits[index])
+            self._emit_many(requesting,logits)
         for keys,old in zip(shared.keys,pinned,strict=True):
             assert torch.equal(keys[:,:,:shared.prefix],old)
         return ticks
@@ -249,6 +275,7 @@ Action: <coordinate, e.g. cD>
                            seconds=time.perf_counter()-client.started,attention=args.attention,window=args.window,
                            generation_seed=generation_seed(seed),max_responses=args.max_responses,
                            batch_size=len(boards),peak_memory_scope='shared GPU worker')
+                requests.put((index,None))
                 client.save(row)
                 (output/f'seed-{seed}-result.json').write_text(json.dumps(row,indent=2))
                 print(json.dumps(row),flush=True)
