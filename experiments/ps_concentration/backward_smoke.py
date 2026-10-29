@@ -15,6 +15,7 @@ from .config import Config, generation_seed
 from .objective import leave_one_out, trajectory_loss
 from .policy import load_model, StreamingQwen
 from .rollout import run_batch, save_episodes
+from .resume_check import check as check_resume
 
 
 def main():
@@ -26,6 +27,7 @@ def main():
     args = parser.parse_args()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
+    optimizer_resume=check_resume()
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     config = Config(model=args.model, attention=args.attention, transcript_cap=token_audit(tokenizer)['52']['required_cap'])
     policy = load_model(args.model)
@@ -71,6 +73,7 @@ def main():
         maximum=max(maximum,float((before-after).abs().max()))
         torch.testing.assert_close(before,after,rtol=0,atol=0)
     result = dict(status='GO', scope='Systems smoke with eight on-policy trajectories; discarded optimizer and weights; not a scientific pilot',
+                  optimizer_resume=optimizer_resume,
                   attention=args.attention, parity=audit, returns=[r['native_return'] for r in records],
                   advantages=advantages.tolist(), losses=losses, sampled_loss_tokens=tokens,
                   gradient_norm=norm, parameter_update_l2=delta, backward_optimizer_seconds=update_seconds,

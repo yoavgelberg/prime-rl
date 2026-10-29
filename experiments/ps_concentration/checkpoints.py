@@ -5,6 +5,13 @@ import time
 import torch
 
 
+def restore_adamw(optimizer,state):
+    optimizer.load_state_dict(state)
+    assert all(not g.get('capturable') and not g.get('fused') for g in optimizer.param_groups)
+    for values in optimizer.state.values():
+        values['step']=values['step'].cpu()
+
+
 def inference_state(policy):
     direct={id(m.weight) for m in policy.modules() if isinstance(m,torch.nn.Embedding)}
     rounded={f'{name}.weight' for name,m in policy.named_modules()

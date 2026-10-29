@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 
 from .check_policy import accept_parity, parity, teacher_logps
-from .checkpoints import retain_selected_and_latest, save_checkpoint
+from .checkpoints import restore_adamw, retain_selected_and_latest, save_checkpoint
 from .config import Config, SPLITS, generation_seed
 from .control import handoff_requested
 from .metrics import summarize
@@ -104,7 +104,7 @@ def train(args):
         for master, tensor, param in zip(masters, state['masters'], policy.parameters(), strict=True):
             master.data.copy_(tensor)
             param.data.copy_(tensor)
-        optimizer.load_state_dict(state['optimizer'])
+        restore_adamw(optimizer,state['optimizer'])
         start_update, best_return, best_update = state['update'], state['best_return'], state['best_update']
         torch.set_rng_state(state['torch_rng'].cpu())
         torch.cuda.set_rng_state_all([x.cpu() for x in state['cuda_rng']])
