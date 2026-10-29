@@ -243,15 +243,28 @@ After thinking, end your final response with exactly one action line:
 Action: <coordinate, e.g. cD>
 '''
     base=load_model(args.model)
+    requested_batch_size=args.batch_size
+    if args.attention=='full':
+        kv_bytes=sum(4*layer.self_attn.k_proj.weight.shape[0]*args.transcript_cap for layer in base.model.layers)
+        cast_bytes=sum(p.numel()*2 for p in base.parameters())
+        free_bytes,_=torch.cuda.mem_get_info()
+        slots=(free_bytes-cast_bytes-2*1024**3)//kv_bytes
+        assert slots>=1,dict(free_bytes=free_bytes,kv_bytes=kv_bytes,cast_bytes=cast_bytes)
+        args.batch_size=min(args.batch_size,int(slots))
+        print(json.dumps(dict(event='memory_admission',requested_batch_size=requested_batch_size,
+                              admitted_batch_size=args.batch_size,free_bytes=free_bytes,
+                              kv_bytes_per_trajectory=kv_bytes)),flush=True)
     tokenizer=AutoTokenizer.from_pretrained(args.model)
     output=Path(args.output);output.mkdir(parents=True,exist_ok=True)
-    metadata=dict(vars(args),model_revision=Path(args.model).name,thinking_retained=True,
+    metadata=dict(vars(args),requested_batch_size=requested_batch_size,
+                  model_revision=Path(args.model).name,thinking_retained=True,
                   system_prompt=prompts.build_single_system(cot_enabled=False),
                   upstream=json.loads((source/'SOURCE.json').read_text()),
                   arithmetic='bf16_products_attention_fp32_residual_and_projection_accumulation',
                   gpu=torch.cuda.get_device_name(),scope='Batched base qualification; no RL/SFT')
-    (output/f'config-{args.start_seed}-batch{args.batch_size}.json').write_text(json.dumps(metadata,indent=2))
-    seeds=[s for s in range(args.start_seed,args.start_seed+args.count) if not (output/f'seed-{s}-result.json').exists()]
+    (output/f'config-{args.start_seed}-batch{args.batch_size}-shard{args.shard_count}-{args.shard_index}.json').write_text(json.dumps(metadata,indent=2))
+    seeds=[s for s in range(args.start_seed,args.start_seed+args.count)
+           if (s-args.start_seed)%args.shard_count==args.shard_index and not (output/f'seed-{s}-result.json').exists()]
     for offset in range(0,len(seeds),args.batch_size):
         boards=seeds[offset:offset+args.batch_size]
         requests=Queue()
@@ -320,6 +333,8 @@ def main():
     parser.add_argument('--count',type=int,default=64)
     parser.add_argument('--max-responses',type=int,default=96)
     parser.add_argument('--batch-size',type=int,default=4)
+    parser.add_argument('--shard-index',type=int,default=0)
+    parser.add_argument('--shard-count',type=int,default=1)
     parser.add_argument('--transcript-cap',type=int,default=262144)
     parser.add_argument('--temperature',type=float,default=.6)
     parser.add_argument('--top-p',type=float,default=.95)
