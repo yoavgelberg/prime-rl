@@ -31,13 +31,17 @@ class ProjectionCache:
     def __init__(self):
         self.casts = {}
 
-    def linear(self, inputs, weight, bias=None):
-        stamp = weight._version, weight.data_ptr()
-        cached = self.casts.get(id(weight))
+    def cast(self, weight):
+        key = weight.data_ptr(), tuple(weight.shape), tuple(weight.stride()), weight.dtype, weight.device
+        stamp = weight._version
+        cached = self.casts.get(key)
         if cached is None or cached[0] != stamp:
             cached = stamp, weight.detach().bfloat16()
-            self.casts[id(weight)] = cached
-        return AccumulatorLinear.apply(inputs, weight, bias, cached[1])
+            self.casts[key] = cached
+        return cached[1]
+
+    def linear(self, inputs, weight, bias=None):
+        return AccumulatorLinear.apply(inputs, weight, bias, self.cast(weight))
 
     def project(self, module, inputs):
         return self.linear(inputs, module.weight, module.bias)
