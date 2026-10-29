@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from .check_policy import teacher_logps
+from .activation_offload import activation_offload
 from .policy import load_model
 
 
@@ -41,7 +42,7 @@ def main():
     print(json.dumps(dict(event='reference_complete', tokens=len(ref), seconds=reference_seconds,
                           allocated_bytes=torch.cuda.memory_allocated())), flush=True)
     started = time.perf_counter()
-    context = torch.autograd.graph.save_on_cpu(pin_memory=True) if args.offload else nullcontext()
+    context = activation_offload(policy.parameters()) if args.offload else nullcontext()
     with context:
         logps = teacher_logps(policy, record, grad=True)
         ratio = ref - logps
