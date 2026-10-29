@@ -50,7 +50,7 @@ class LiveBackward:
         model.recorded_compact_kv = self.config.compact_kv or self.config.kv_cache
         with torch.inference_mode(False), torch.enable_grad():
             self.inputs = torch.empty((tape.slots * tape.capacity, 1), device=model.device, dtype=torch.long)
-            self.targets = torch.empty_like(self.inputs)
+            self.targets = torch.full_like(self.inputs, -100)
         self.graph_cache = graph_cache if graph_cache is not None else RecordedGraphCache(model, self.chunk)
         decoder = runner.model.runnable if hasattr(runner.model, "runnable") else runner.model
         self.ropes = [layer.self_attn.rotary_emb.cos_sin_cache for layer in decoder.model.layers]
@@ -97,7 +97,7 @@ class LiveBackward:
         self.tasks.put(item)
         self.cpu_backpressure_seconds += time.perf_counter() - start
 
-    def observe(self, runner, sampler_output, spec_decode_metadata):
+    def observe(self, runner, sampler_output, spec_decode_metadata, *, loss_targets=None):
         from .ps_capture import _write
 
         self._check()
@@ -105,7 +105,10 @@ class LiveBackward:
             raise ValueError("Initial recorded streaming integration requires ordinary autoregressive sampling")
         count = int(runner.query_start_loc.np[runner.input_batch.num_reqs])
         _write((runner.input_ids.gpu[:count, None],), self.inputs, self.tape.token_slots)
-        _write((sampler_output.sampled_token_ids,), self.targets, self.tape.head_slots)
+        labels = sampler_output.sampled_token_ids if loss_targets is None else loss_targets
+        if labels.shape != sampler_output.sampled_token_ids.shape:
+            raise ValueError("Role-masked targets must match the sampled-token batch")
+        _write((labels,), self.targets, self.tape.head_slots)
         ready = []
         for row, request in enumerate(runner.input_batch.req_ids):
             state = runner.requests[request]

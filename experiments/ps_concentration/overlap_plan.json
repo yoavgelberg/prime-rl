@@ -35,7 +35,7 @@
     "rollouts_per_board": 8,
     "global_episodes_per_update": 64,
     "pilot_episodes": 2048,
-    "advantage": "R_k - mean(R_j for j != k), within board; no reward-standard-deviation normalization",
+    "advantage": "(R_k - group_mean_R) / (group_sample_std_R + 1e-4), within each board; correction=1; identical-reward groups have exactly zero task advantage",
     "loss_tokens": "Every sampled assistant token, including all thinking and early turns; forced feedback/template tokens have zero direct loss",
     "trajectory_denominator": 26624,
     "batch_denominator": 64,
@@ -66,6 +66,20 @@
       "reference": "Frozen original checkpoint with the same PS mask and temperature",
       "denominator": "Same fixed trajectory and global batch denominators",
       "execution": "Initial version uses an exact teacher-forced reference/policy KL pass after the generation cohorts; no duplicate task-reward backward. Release generation activation pools before teacher activation offload to avoid double-counting host RAM."
+    },
+    "algorithm": "GRPO",
+    "advantage_config": {
+      "type": "custom",
+      "import_path": "prime_rl.orchestrator.grpo.grpo_advantage_fn",
+      "kwargs": {
+        "epsilon": 0.0001
+      }
+    },
+    "surrogate": {
+      "type": "clipped GRPO",
+      "clip_epsilon": 0.2,
+      "epochs_per_fresh_batch": 1,
+      "on_policy_overlap": "At the unchanged rollout policy the ratio is exactly 1, so the clipped surrogate derivative equals the advantage-weighted recorded score derivative. No stale gradients or multiple PPO epochs."
     }
   },
   "execution": {
@@ -80,8 +94,8 @@
     "active_trajectories_node_target": 32,
     "board_assignment": "One board per GPU on 8-GPU layout; two four-request cohorts produce the eight rollouts; four-GPU fallback handles two boards per GPU while preserving global64",
     "concurrency_qualification": "Four/GPU is the host-memory ceiling for the current C1024 kernel, not yet a measured 4B GPU fit. Reduce only physical concurrency if full buffer accounting/first actual batch needs it; preserve board/group/global batch and objective. No standalone performance smokes.",
-    "group_storage": "Reduce completed score gradients into CPU G/H accumulators; exact G/(G-1) RLOO correction; discard private GPU gradient once safely reduced",
-    "interactive_rollouts": "Persistent native vLLM request; deterministic environment/template token injection with explicit role/loss masks; preserve sampled thinking, original positions, immutable system prefix and streaming KV. No per-turn cold prefill.",
+    "group_storage": "Reduce completed score gradients into CPU G/H accumulators; after all eight rewards, use (H - mean_R * G) / (sample_std_R + 1e-4). No leave-one-out correction. Release private GPU gradients after safe reduction.",
+    "interactive_rollouts": "Implemented persistent vLLM sampler hook with a system-only initial prompt; first observation and later feedback/template tokens are forced outputs with labels -100. Native thinking/actions are retained with sampled-token labels. Transport padding after game end is excluded from task transcript and loss. Driver must ignore EOS and abort only after native completion/resource termination.",
     "stream_config": {
       "window": 1024,
       "chunk_tokens": 1024,
@@ -178,17 +192,21 @@
     "forecast_is_guarantee": false
   },
   "implementation_verified_this_turn": [
-    "CPU G/H accumulator placement and exact leave-one-out correction",
-    "Configured-temperature recorded head and fixed-denominator gradient normalization",
-    "Native pinned vLLM supports per-request data-parallel routing and DP process group",
-    "14 CPU objective/gradient checks passed; no new GPU smoke launched"
+    "GRPO delayed CPU aggregation matches a directly differentiated clipped surrogate at the unchanged on-policy weights",
+    "Persistent chat preserves exact tokens and loss masks across >2W tokens, turn boundaries, sampled EOS and partial resource exhaustion",
+    "Native vLLM sample hook routes forced/sampled labels into live backward, skips discarded prefill, and retains actual unfiltered T=.6 likelihoods",
+    "23 CPU objective/mask/controller checks passed; no GPU smoke launched",
+    "Persistent native CPU integration with actual tokenizer: P=342, two native attempts, all 14 scripted assistant tokens and no forced tokens carry loss; not LLM performance",
+    "Pinned public vLLM DP RPC drops nonzero-rank return values; new worker_rpc explicitly retains every engine reply",
+    "25 CPU controller/GRPO/DP orchestration checks pass"
   ],
   "implementation_remaining": [
-    "Persistent-game token controller and system-only prefix metadata in native vLLM",
-    "Connect recorded-gradient backend to PrimeRL rollout/optimizer orchestration and native weight synchronization",
+    "Launch/configure the native vLLM engine and qualify on actual learning data; cohort driver and rank-complete RPC are implemented but not GPU-executed",
+    "Connect GRPO recorded-gradient backend to PrimeRL optimizer/checkpoint orchestration and native weight synchronization",
     "Phase-safe host activation-pool retirement plus reference/KL pass",
     "W&B initialization and complete metric wiring",
     "Production checkpoint/resume and launch snapshot; first-learning-data numerical audit",
-    "Actual allocation and real-batch GPU fit/throughput measurement"
+    "Actual allocation and real-batch GPU fit/throughput measurement",
+    "Full PrimeRL advantage-dispatch import test needs jaxtyping in local CPU test environment; pure GRPO hook math and delayed gradients pass"
   ]
 }

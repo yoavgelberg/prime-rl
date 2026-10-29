@@ -306,7 +306,7 @@ def install():
     def sample(self, logits, spec_decode_metadata):
         result = original_sample(self, logits, spec_decode_metadata)
         if _store.active and _store.live is not None:
-            _store.live.observe(self, result, spec_decode_metadata)
+            _store.live.observe(self, result, spec_decode_metadata, loss_targets=getattr(result, "ps_loss_targets", None))
         return result
 
     Qwen3Model.__init__ = init

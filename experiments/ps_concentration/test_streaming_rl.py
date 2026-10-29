@@ -92,3 +92,37 @@ def test_fixed_gradient_denominator_does_not_depend_on_generated_length():
         outputs.append(parameter.grad.clone())
     torch.testing.assert_close(outputs[0], outputs[1], rtol=0, atol=0)
     torch.testing.assert_close(outputs[0], torch.tensor([8., -4.]) / 26624)
+
+
+@pytest.mark.parametrize("order", [range(8), reversed(range(8))])
+def test_delayed_grpo_matches_direct_clipped_surrogate_gradient(order):
+    from prime_rl.orchestrator.grpo import normalized_advantages
+
+    rng = torch.Generator().manual_seed(22)
+    features = torch.randn(8, 13, dtype=torch.float64, generator=rng)
+    rewards = torch.tensor([[-.8, -.8, 0., .25, -.4, 1., .5, -.1]], dtype=torch.float64)
+    parameter = torch.randn(13, dtype=torch.float64, generator=rng, requires_grad=True)
+    logps = -(features @ parameter).square()
+    advantages = normalized_advantages(rewards)[0]
+    ratio = (logps - logps.detach()).exp()
+    clipped = ratio.clamp(.8, 1.2)
+    loss = -torch.minimum(ratio * advantages, clipped * advantages).sum() / (26624 * 64)
+    expected, = torch.autograd.grad(loss, parameter)
+    group = RewardGradientGroup(8, 3, baseline="grpo", device="cpu")
+    for index in order:
+        score = 2 * features[index] * (features[index] @ parameter.detach())
+        group.add(index, {"w": score}, float(rewards[0, index]), policy_version=3)
+    actual = group.finish(policy_version=3, scale=1 / (26624 * 64))
+    torch.testing.assert_close(actual['w'], expected, atol=1e-17, rtol=1e-12)
+    assert group.reward_std == pytest.approx(float(rewards.std(correction=1)), abs=1e-15)
+
+
+def test_identical_rewards_have_exactly_zero_grpo_advantage_and_gradient():
+    from prime_rl.orchestrator.grpo import normalized_advantages
+
+    rewards = torch.full((2, 8), .1, dtype=torch.float64)
+    assert not normalized_advantages(rewards).count_nonzero()
+    group = RewardGradientGroup(8, 0, baseline="grpo")
+    for index in range(8):
+        group.add(index, {"w": torch.tensor([index * .13], dtype=torch.float64)}, .1, policy_version=0)
+    assert not group.finish(policy_version=0)['w'].count_nonzero()

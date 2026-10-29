@@ -1,0 +1,147 @@
+"""Pinned native Matching Pairs games inside persistent vLLM worker requests."""
+
+from concurrent.futures import ThreadPoolExecutor
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import sys
+from threading import local
+import time
+import types
+
+from transformers import AutoTokenizer
+
+from prime_rl.inference.vllm.ps_interactive import PersistentChat, TranscriptLimit
+
+from .rng_metrics import score_prefix
+from .rng_training_config import outcome_reward
+
+
+class GameCohort:
+    def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
+                 transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
+                 context_exhaustion_reward=-1., collect_cuda_metrics=True):
+        self.rank, self.attention, self.window = rank, attention, window
+        self.temperature, self.greedy = temperature, greedy
+        self.transcript_cap, self.max_responses = transcript_cap, max_responses
+        self.context_exhaustion_reward = context_exhaustion_reward
+        self.source, self.output = Path(source), Path(output)
+        self.output.mkdir(parents=True, exist_ok=True)
+        lock = json.loads((self.source / 'SOURCE.json').read_text())
+        if lock['commit'] != 'e3d195e857727dfa3d4a96561be202098d67da83':
+            raise ValueError('The native game revision differs from the frozen benchmark')
+        for row in lock['manifest']:
+            if hashlib.sha256((self.source / row['path']).read_bytes()).hexdigest() != row['sha256']:
+                raise ValueError(f'Native source changed: {row["path"]}')
+        self.tokenizer = AutoTokenizer.from_pretrained(model)
+        generation = json.loads((Path(model) / 'generation_config.json').read_text())
+        eos = generation['eos_token_id']
+        eos = eos if isinstance(eos, list) else [eos]
+        self.specs = {spec['episode_id']: spec for spec in specs if spec['rank'] == rank}
+        self.chats, self.paths = {}, {}
+        if collect_cuda_metrics:
+            import torch
+            self.device = torch.cuda.current_device()
+        else:
+            self.device = None
+        state = local()
+        sys.path.insert(0, str(self.source / '1_matching_pairs_new'))
+        shim = types.ModuleType('model_presets')
+        shim.make_client = lambda *args, **kwargs: state.client
+        shim.parse_grid_size = lambda value: tuple(map(int, value.split('x')))
+        sys.modules['model_presets'] = shim
+        from modes import single_normal
+        from common import prompts
+        single_normal.make_client = shim.make_client
+        prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
+After thinking, end your final response with exactly one action line:
+Action: <coordinate, e.g. cD>
+'''
+        self.run_one_game, self.state = single_normal.run_one_game, state
+        for identity, spec in self.specs.items():
+            folder = self.output / identity
+            folder.mkdir(exist_ok=False)
+            self.paths[identity] = folder
+            self.chats[identity] = PersistentChat(self.tokenizer, eos_token_ids=eos,
+                transcript_cap=transcript_cap, on_turn=lambda turn, identity=identity: self._turn(identity, turn))
+        self.pool = ThreadPoolExecutor(max_workers=max(len(self.chats), 1))
+        self.futures = {identity: self.pool.submit(self._play, identity) for identity in self.chats}
+        self.results = None
+
+    def _turn(self, identity, turn):
+        folder = self.paths[identity]
+        with gzip.open(folder / 'turns.jsonl.gz', 'at', compresslevel=1) as handle:
+            handle.write(json.dumps(turn) + '\n')
+        client = self.chats[identity]
+        row = dict(episode_id=identity, board_seed=self.specs[identity]['board_seed'],
+            attention=self.attention, turns=len(client.turns), raw_transcript_tokens=len(client.tokens),
+            generated_tokens=client.generated_tokens, latest_action=turn['content'],
+            seconds=time.perf_counter() - client.started)
+        temporary = folder / 'progress.json.tmp'
+        temporary.write_text(json.dumps(row, indent=2))
+        temporary.replace(folder / 'progress.json')
+        print(json.dumps(dict(event='game_turn', **row)), flush=True)
+
+    def _play(self, identity):
+        chat, folder, spec = self.chats[identity], self.paths[identity], self.specs[identity]
+        self.state.client = chat
+        try:
+            censored, reason = False, None
+            try:
+                result = self.run_one_game(model='local-vllm', rows=4, cols=4, num_cards=None,
+                    seed=spec['board_seed'], render='text', theme=None,
+                    assets_dir=str(self.source / '1_matching_pairs_new/assets'), cell_size=64,
+                    out_dir=folder / 'native', max_responses=self.max_responses, max_retries=2, cot_enabled=False)
+                if result.get('error') is not None:
+                    raise RuntimeError(f'Native game failed: {result["error"]}')
+            except TranscriptLimit as error:
+                censored, reason = True, str(error)
+                chat.exhaust()
+            native = json.loads((folder / 'native/game.json').read_text())
+            row = dict(score_prefix(native, self.max_responses), **spec, censored=censored,
+                resource_limit_reason=reason, greedy=self.greedy)
+            if not censored and row['score'] != result['score']:
+                raise ValueError('Offline native score differs from the environment result')
+            row['training_return'] = outcome_reward(row, self.max_responses, self.context_exhaustion_reward)
+            row.update(generated_tokens=chat.generated_tokens, raw_transcript_tokens=len(chat.tokens),
+                seconds=time.perf_counter() - chat.started, engine='vllm-persistent-game')
+            chat.finish()
+            record = dict(chat.record(), **row, attention=self.attention, window=self.window,
+                temperature=self.temperature, top_p=1., top_k=-1,
+                native_game_json=str(folder / 'native/game.json'),
+                logprob_definition='Unfiltered softmax at recorded temperature; greedy choices are evaluation only')
+            if not all((value is not None) == keep for value, keep in zip(
+                    record['old_tempered_logps'], record['loss_mask'], strict=True)):
+                raise ValueError('Forced tokens acquired a direct loss or assistant likelihoods are missing')
+            if self.device is not None:
+                import torch
+                record['peak_allocated_bytes'] = torch.cuda.max_memory_allocated(self.device)
+                record['peak_reserved_bytes'] = torch.cuda.max_memory_reserved(self.device)
+            temporary = folder / 'tokens.json.gz.tmp'
+            with gzip.open(temporary, 'wt', compresslevel=1) as handle:
+                json.dump(record, handle)
+            temporary.replace(folder / 'tokens.json.gz')
+            row.update(token_record=str(folder / 'tokens.json.gz'),
+                token_record_sha256=hashlib.sha256((folder / 'tokens.json.gz').read_bytes()).hexdigest())
+            (folder / 'result.json').write_text(json.dumps(row, indent=2) + '\n')
+            return row
+        except BaseException as error:
+            chat.finish(error=error)
+            raise
+
+    def initial_requests(self):
+        return [dict(request_id=identity, prompt_token_ids=chat.initial_prompt(),
+            generation_seed=self.specs[identity]['generation_seed'], data_parallel_rank=self.rank,
+            max_tokens=self.transcript_cap - len(chat.prefix)) for identity, chat in self.chats.items()]
+
+    def status(self):
+        return {identity: chat.status() for identity, chat in self.chats.items()}
+
+    def finish(self):
+        if not all(chat.status()['done'] for chat in self.chats.values()):
+            raise RuntimeError('Cannot finish before native games are terminal')
+        if self.results is None:
+            self.results = [future.result() for future in self.futures.values()]
+            self.pool.shutdown(wait=True)
+        return self.results

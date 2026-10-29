@@ -8,8 +8,10 @@ from vllm.v1.worker.gpu_worker import Worker
 from prime_rl.trainer.ps_backward.config import StreamConfig
 from prime_rl.trainer.ps_backward.qwen3 import load_backward_model
 
+from .ps_interactive import InteractiveWorkerMixin, install_sampling_hook
 
-class PSStreamingWorker(Worker):
+
+class PSStreamingWorker(InteractiveWorkerMixin, Worker):
     def load_model(self):
         config = self.vllm_config
         hf = config.model_config.hf_config
@@ -31,6 +33,7 @@ class PSStreamingWorker(Worker):
             raise ValueError("max_num_seqs must cover the configured streaming cohort")
         from .ps_capture import install
 
+        install_sampling_hook()
         install()
         super().load_model()
 
