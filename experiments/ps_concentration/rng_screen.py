@@ -12,9 +12,32 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 
 
+PROMPTED_MEMORY = """You are playing a randomly shuffled Memory Match game. Clear all pairs in as few flips as possible. Each card has one matching partner. Flip one card per response; two successive flips form a pair. Equal cards are removed. Mismatched cards are shown and then turn face down again.
+Coordinates use lowercase row and uppercase column, e.g. aB. [*] is a face-down card; [ ] is a matched/removed slot. Only [*] positions can be selected. Never select the currently revealed first card again.
+Use this strategy:
+1. In Thought, keep an updated list of every revealed UNMATCHED card and its location. Copy these notes forward each turn, incorporate new reveals, and remove both locations when matched. A card turning face down does not erase what you learned about it.
+2. For a first flip, take one card of a known pair if available. Otherwise choose an unseen position.
+3. For a second flip, choose a different known unmatched card with the SAME value whenever one is known. Otherwise choose an unseen position.
+4. Prefer the earliest coordinate when several choices are equally good. The shuffle is random: neighboring positions have no greater chance of matching. Do not keep trying a pair you already know is a mismatch.
+Respond with your notes and move decision, followed by exactly one action:
+Thought: <known unmatched card-location notes; reasoning for this move>
+Action: <coordinate>
+The first observation begins a new independent board with no known cards."""
+
+
+REMEMBER_PAST = """You are playing a randomly shuffled Memory Match game. Clear all pairs in as few flips as possible. Each card has one matching partner. Flip one card per response; two successive flips form a pair. Equal cards are removed. Mismatched cards are shown and then turn face down again.
+Coordinates use lowercase row and uppercase column, e.g. aB. [*] is a face-down card; [ ] is a matched/removed slot. Only [*] positions can be selected. Never select the currently revealed first card again.
+Remember what you tried on previous turns, including the positions and values of cards you revealed. Use that knowledge when choosing the next card. A card turning face down does not erase what you learned about it. All turns belong to the same game.
+Respond with your move decision, followed by exactly one action:
+Thought: <your reasoning or scratch work>
+Action: <coordinate>
+The first observation begins a new independent board with no known cards."""
+
+
 class AnswerLine(StoppingCriteria):
-    def __init__(self, tokenizer, start, thinking):
+    def __init__(self, tokenizer, start, thinking, marker='ANSWER'):
         self.tokenizer, self.start, self.thinking = tokenizer, start, thinking
+        self.pattern = re.compile(r'(?:^|\n)\**'+re.escape(marker)+r'[ \t]+\**\d+\**[ \t]*\n',re.IGNORECASE)
 
     def __call__(self, input_ids, scores, **kwargs):
         text = self.tokenizer.decode(input_ids[0,self.start:], skip_special_tokens=True)
@@ -22,7 +45,7 @@ class AnswerLine(StoppingCriteria):
             if '</think>' not in text:
                 return False
             text = text.rsplit('</think>',1)[-1]
-        return re.search(r'(?:^|\n)ANSWER \d+[ \t]*\n',text) is not None
+        return self.pattern.search(text) is not None
 
 
 class LocalPolicy:
@@ -45,11 +68,15 @@ class LocalPolicy:
         inputs = self.tokenizer.apply_chat_template(text_messages, tokenize=True, add_generation_prompt=True,
                                                     return_tensors='pt').to('cuda')
         started = time.perf_counter()
-        kwargs = dict(do_sample=self.args.sample, max_new_tokens=self.args.max_new_tokens,
-                      pad_token_id=self.tokenizer.eos_token_id)
+        kwargs = dict(do_sample=self.args.sample, pad_token_id=self.tokenizer.eos_token_id)
+        if getattr(self.args,'unlimited_response',False):
+            kwargs.update(max_new_tokens=None,max_length=self.model.config.max_position_embeddings)
+        else:
+            kwargs['max_new_tokens'] = self.args.max_new_tokens
         thinking = self.tokenizer.decode(inputs[0,-8:],skip_special_tokens=False).rstrip().endswith('<think>')
         if getattr(self.args,'stop_at_answer',False):
-            kwargs['stopping_criteria'] = StoppingCriteriaList([AnswerLine(self.tokenizer,inputs.shape[1],thinking)])
+            kwargs['stopping_criteria'] = StoppingCriteriaList([AnswerLine(
+                self.tokenizer,inputs.shape[1],thinking,getattr(self.args,'answer_marker','ANSWER'))])
         if self.args.sample:
             kwargs.update(temperature=getattr(self.args,'temperature',.6),
                           top_p=getattr(self.args,'top_p',.95), top_k=getattr(self.args,'top_k',20))
@@ -57,7 +84,9 @@ class LocalPolicy:
         sampled = output[0, inputs.shape[1]:].tolist()
         text = self.tokenizer.decode(sampled, skip_special_tokens=True)
         self.calls.append(dict(input_ids=inputs[0].tolist(), sampled_ids=sampled,
-                               seconds=time.perf_counter()-started, output=text))
+                               seconds=time.perf_counter()-started, output=text,
+                               context_exhausted=bool(getattr(self.args,'unlimited_response',False) and
+                                                      output.shape[1]>=self.model.config.max_position_embeddings)))
         if thinking:
             if '</think>' in text:
                 reasoning, content = text.rsplit('</think>',1)
@@ -78,12 +107,22 @@ def run(args):
     shim.make_client = lambda *a, **kw: client
     shim.parse_grid_size = lambda value: tuple(map(int, value.split('x')))
     sys.modules['model_presets'] = shim
-    from modes.single_normal import run_one_game
+    from modes import single_normal
+    system_prompt = {'native': None, 'prompted_memory': PROMPTED_MEMORY,
+                     'remember_past': REMEMBER_PAST}[args.strategy]
+    if system_prompt is not None:
+        single_normal.build_single_system = lambda *a,**kw: system_prompt
+    run_one_game = single_normal.run_one_game
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     metadata = dict(model=args.model, upstream=lock, rows=args.rows, cols=args.cols,
-                    max_responses_per_pair=None if args.unbounded else 5, max_retries=2, max_new_tokens=args.max_new_tokens,
+                    max_responses_per_pair=None if args.unbounded else 5, max_retries=2,
+                    max_new_tokens=None if args.unlimited_response else args.max_new_tokens,
+                    strategy=args.strategy, unlimited_response=args.unlimited_response,
+                    prompted_memory_strategy=args.strategy=='prompted_memory',
+                    system_prompt=system_prompt,
                     sample=args.sample, temperature=args.temperature if args.sample else 0., full_context=True,
+                    top_p=args.top_p if args.sample else None, top_k=args.top_k if args.sample else None,
                     text_transport='Native text content parts joined with newlines; local HF generation',
                     scope='Task-qualification diagnostic, not a reproduction of published model scores')
     (output/'config.json').write_text(json.dumps(metadata, indent=2))
@@ -122,6 +161,8 @@ def main():
     parser.add_argument('--top-p', type=float, default=.8)
     parser.add_argument('--top-k', type=int, default=20)
     parser.add_argument('--unbounded', action='store_true')
+    parser.add_argument('--unlimited-response', action='store_true')
+    parser.add_argument('--strategy', choices=['native','prompted_memory','remember_past'],default='native')
     run(parser.parse_args())
 
 

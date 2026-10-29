@@ -26,8 +26,9 @@ def test_count_order_from_observations(name):
 
 
 def test_count_answer_parser():
-    assert parse('It has appeared twice.\nANSWER 2', 16) == (2, False)
-    for text in ('ANSWER 2\nANSWER 3', 'ANSWER -1', 'ANSWER 17', 'ANSWER 2\nMore text', ''):
+    assert parse('Thought: It has appeared twice.\nAction: 2', 16) == (2, False)
+    assert parse('Thought: Two.\n**Action: 2**',16) == (2,False)
+    for text in ('Action: 2\nAction: 3', 'Action: -1', 'Action: 17', 'Action: 2\nMore text', ''):
         assert parse(text,16) == (0,True)
 
 
@@ -37,3 +38,8 @@ def test_count_answer_parser():
 def test_answer_stop_waits_for_complete_action(text,thinking,expected):
     tokenizer = SimpleNamespace(decode=lambda *a,**kw:text)
     assert AnswerLine(tokenizer,0,thinking)(torch.tensor([[0]]),None) == expected
+
+
+def test_action_stop_format():
+    tokenizer = SimpleNamespace(decode=lambda *a,**kw:'Thought: Two.\nAction: 2\n')
+    assert AnswerLine(tokenizer,0,False,'Action:')(torch.tensor([[0]]),None)
