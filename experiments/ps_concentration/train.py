@@ -307,7 +307,7 @@ def main():
     parser.add_argument('--model', default='Qwen/Qwen3-4B-Instruct-2507')
     parser.add_argument('--revision', default='')
     parser.add_argument('--window', type=int, default=1024)
-    parser.add_argument('--batch-size', type=int, default=16)
+    parser.add_argument('--batch-size', type=int, default=8)
     parser.add_argument('--output')
     parser.add_argument('--resume')
     parser.add_argument('--separate-actors', action='store_true')
