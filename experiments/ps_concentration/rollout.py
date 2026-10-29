@@ -18,8 +18,9 @@ from .policy import StreamingQwen
 class ChatCodec:
     def __init__(self, tokenizer, cards=52, limit=104, prompted=False):
         self.tokenizer = tokenizer
+        self.system = dict(role='system', content=system_prompt(cards, limit, prompted))
         self.prefix = tokenizer.apply_chat_template(
-            [dict(role='system', content=system_prompt(cards, limit, prompted))],
+            [self.system],
             tokenize=True, add_generation_prompt=False)
         assert len(self.prefix) <= 512
         # Derive the closing delimiter from the native rendered assistant message.
@@ -30,8 +31,10 @@ class ChatCodec:
         self.eos = tokenizer.eos_token_id
 
     def observation(self, text):
-        return self.tokenizer.apply_chat_template([dict(role='user', content=text)], tokenize=True,
-                                                  add_generation_prompt=True)
+        complete = self.tokenizer.apply_chat_template([self.system, dict(role='user', content=text)],
+                                                      tokenize=True, add_generation_prompt=True)
+        assert complete[:len(self.prefix)] == self.prefix
+        return complete[len(self.prefix):]
 
 
 def save_episodes(path, records):

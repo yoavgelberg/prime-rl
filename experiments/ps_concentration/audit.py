@@ -71,12 +71,10 @@ def token_audit(tokenizer):
                                                         tokenize=True, add_generation_prompt=False)
         assert len(prefix) <= 512
         reset_text = f'step=0 limit={limit} next_pick=first last_action=none reward=0.00000000\nvisible={{}}'
-        user = tokenizer.apply_chat_template([dict(role='user', content=reset_text)], tokenize=True,
-                                             add_generation_prompt=True)
         complete = tokenizer.apply_chat_template([dict(role='system', content=system_prompt(cards, limit)),
                                                    dict(role='user', content=reset_text)], tokenize=True,
                                                   add_generation_prompt=True)
-        assert prefix + user == complete, 'Incremental serialization must equal the native initial chat template'
+        assert complete[:len(prefix)] == prefix, 'Native template must preserve the fixed system prefix'
         # Byte bound is conservative for Qwen's byte-level tokenizer, including all
         # possible observations and delimiters; generated tokens are counted directly.
         observation = (f'step={limit} limit={limit} next_pick=second last_action={cards-1} reward=-0.01923077\n'
