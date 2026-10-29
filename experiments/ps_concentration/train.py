@@ -182,6 +182,13 @@ def train(args):
             dist.destroy_process_group()
         return True
 
+    if not args.resume:
+        if rank==0:
+            save_resume(0)
+            (output/'selected.json').write_text(json.dumps(dict(update=0,native_return=best_return,
+                                                               checkpoint=str(output/'checkpoint-0000'))))
+        if world>1:
+            dist.barrier()
     if yield_allocation(start_update):
         return
     for update in range(start_update + 1, args.updates + 1):
