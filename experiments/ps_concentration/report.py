@@ -116,6 +116,18 @@ def generate(args):
     if curves: plt.legend(fontsize=8)
     plt.tight_layout(); plt.savefig(out/'return-vs-episodes.png', dpi=180); plt.close()
     plt.figure(figsize=(7,4))
+    training_rows=[]
+    for path in sorted(root.rglob('updates.jsonl')):
+        rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        if rows:
+            label=path.parent.name
+            plt.plot([r['episodes'] for r in rows],[r['native_return'] for r in rows],label=label)
+            training_rows.extend(dict(run=label,update=r['update'],episodes=r['episodes'],native_return=r['native_return']) for r in rows)
+    write_csv(out/'sampled-training-returns.csv',training_rows)
+    plt.xlabel('Training episodes'); plt.ylabel('Fresh sampled-batch native return')
+    if training_rows: plt.legend(fontsize=8)
+    plt.tight_layout(); plt.savefig(out/'sampled-return-vs-episodes.png',dpi=180); plt.close()
+    plt.figure(figsize=(7,4))
     grouped = {}
     sweep_rows=[]
     for (training,seed,split,attention,window),(records,metric) in catalog.items():
@@ -219,7 +231,7 @@ def generate(args):
     (out/'results.json').write_text(json.dumps(result, indent=2))
     body = '<h1>Concentration memory RL results</h1>'
     body += f'<p>Status: {result["status"]}. Tables and plots are derived from saved episode and update records.</p>'
-    for name in ('return-vs-episodes','return-vs-window','known-match-vs-age'):
+    for name in ('return-vs-episodes','sampled-return-vs-episodes','return-vs-window','known-match-vs-age'):
         body += f'<img src="{name}.png" style="max-width:800px"><br>'
     body += '<pre>'+html.escape(json.dumps(result, indent=2))+'</pre>'
     (out/'report.html').write_text('<!doctype html><meta charset="utf-8">'+body)
