@@ -1,4 +1,4 @@
-"""Exact delayed GRPO centering with two gradient sums per unfinished group."""
+"""Exact delayed outcome centering with two gradient sums per unfinished group."""
 
 import math
 
@@ -12,12 +12,20 @@ class RewardGradientGroup:
     The default baseline matches Prime-RL's reward mean; pass completion length
     as baseline_weight for its length-weighted variant. Pending rollouts still
     need their own score-gradient state until their individual reward arrives.
+    ``baseline="leave_one_out"`` applies the exact G/(G-1) correction. ``device``
+    controls accumulator placement independently of the live score gradients.
     """
 
-    def __init__(self, size, policy_version):
+    def __init__(self, size, policy_version, *, baseline="mean", device=None):
         if size < 1:
             raise ValueError("A reward group must be nonempty")
+        if baseline not in ("mean", "leave_one_out"):
+            raise ValueError("Unknown reward baseline")
+        if baseline == "leave_one_out" and size < 2:
+            raise ValueError("A leave-one-out baseline requires at least two rollouts")
         self.size, self.policy_version = size, policy_version
+        self.baseline = baseline
+        self.device = torch.device(device) if device is not None else None
         self.seen = set()
         self.gradient_sum, self.reward_gradient_sum = {}, {}
         self.reward_sum, self.weight_sum = 0.0, 0.0
@@ -35,11 +43,13 @@ class RewardGradientGroup:
             raise ValueError("Reward must be finite and baseline weight positive")
         if self.seen and gradient.keys() != self.gradient_sum.keys():
             raise ValueError("Rollout gradients have different parameter sets")
+        if self.baseline == "leave_one_out" and baseline_weight != 1.0:
+            raise ValueError("Leave-one-out centering requires unweighted rollout rewards")
         for name, value in gradient.items():
             if value.requires_grad:
                 raise ValueError("Score-gradient accumulators must be detached")
             dtype = torch.float64 if value.dtype == torch.float64 else torch.float32
-            value = value.to(dtype)
+            value = value.to(device=self.device or value.device, dtype=dtype)
             if not self.seen:
                 self.gradient_sum[name] = value.clone()
                 self.reward_gradient_sum[name] = value.clone().mul_(reward)
@@ -58,7 +68,11 @@ class RewardGradientGroup:
             raise RuntimeError("All rewards must arrive exactly once before finalization")
         if policy_version != self.policy_version:
             raise ValueError("The optimizer policy changed while this group was in flight")
+        if not math.isfinite(scale):
+            raise ValueError("Gradient scale must be finite")
         baseline = self.reward_sum / self.weight_sum
+        if self.baseline == "leave_one_out":
+            scale *= self.size / (self.size - 1)
         for name, value in self.reward_gradient_sum.items():
             value.add_(self.gradient_sum[name], alpha=-baseline).mul_(scale)
         self.closed = True

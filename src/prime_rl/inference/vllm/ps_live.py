@@ -42,6 +42,8 @@ class LiveBackward:
         self.config, self.warmup = tape.config, warmup
         self.chunk = self.config.chunk_tokens
         model.recorded_fp32_attention = self.config.fp32_attention
+        model.recorded_score_temperature = self.config.score_temperature
+        model.recorded_loss_denominator = self.config.loss_denominator
         model.recorded_joint_qkv = self.config.joint_qkv
         model.recorded_direct_weight_gradients = self.config.direct_weight_gradients
         model.recorded_weight_gradient_backend = self.config.weight_gradient_backend
@@ -110,7 +112,7 @@ class LiveBackward:
             if request not in self.prefixes:
                 params = state.sampling_params
                 if (
-                    params.temperature != 1.0
+                    params.temperature != self.config.score_temperature
                     or params.top_p != 1.0
                     or params.top_k not in (-1, 0)
                     or params.repetition_penalty != 1.0
@@ -124,7 +126,7 @@ class LiveBackward:
                     or params.bad_words
                     or params.structured_outputs
                 ):
-                    raise ValueError("Score reuse currently requires unfiltered unit-temperature sampling")
+                    raise ValueError("Score reuse requires unfiltered sampling at the configured score temperature")
                 if state.num_prompt_tokens > self.chunk:
                     raise ValueError("The prompt must fit chunk_tokens; increase the chunk and ring sizes")
                 self.prefixes[request] = state.num_prompt_tokens
@@ -288,9 +290,7 @@ class LiveBackward:
                     pass
                 else:
                     raise RuntimeError("Layerwise tail yielded an unexpected extra stage")
-                for parameter in stream.parameters.values():
-                    if parameter.grad is not None:
-                        parameter.grad.div_(stream.loss_tokens)
+                stream.normalize_gradients()
                 if stream.kv_cache is not None:
                     stream.kv_cache.clear()
 
@@ -493,7 +493,9 @@ class LiveBackward:
             activation_storage=self.host_tape.report(),
             requests={
                 request: dict(
-                    loss=(stream.loss / stream.loss_tokens).item(),
+                    loss=(stream.loss / max(stream.loss_tokens, 1)).item(),
+                    loss_denominator=stream.loss_denominator,
+                    score_temperature=stream.score_temperature,
                     loss_tokens=stream.loss_tokens,
                     peak_live_token_layers=stream.schedule.peak_live_token_layers,
                     retired_tokens=stream.schedule.retired_tokens,

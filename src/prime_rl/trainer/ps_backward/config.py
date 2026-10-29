@@ -1,6 +1,7 @@
 """Configuration for one fixed-policy cohort of streaming rollouts."""
 
 from dataclasses import dataclass
+import math
 from importlib.metadata import version
 
 
@@ -24,6 +25,8 @@ class StreamConfig:
     copy_programs: int = 0
     gpu_stages_in_flight: int = 4
     backward_batch_tokens: int = 1024
+    score_temperature: float = 1.0
+    loss_denominator: int | None = None
 
     def __post_init__(self):
         for name in (
@@ -35,6 +38,12 @@ class StreamConfig:
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        if not math.isfinite(self.score_temperature) or self.score_temperature <= 0:
+            raise ValueError("score_temperature must be finite and positive")
+        if self.loss_denominator is not None and (
+            type(self.loss_denominator) is not int or self.loss_denominator < 1
+        ):
+            raise ValueError("loss_denominator must be a positive integer or None")
         if self.ring_tokens < self.chunk_tokens or self.ring_tokens % self.chunk_tokens:
             raise ValueError("The GPU ring must hold an integral positive number of chunks")
         if self.tail_block_tokens < self.chunk_tokens:

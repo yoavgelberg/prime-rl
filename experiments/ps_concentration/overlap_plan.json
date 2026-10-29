@@ -1,0 +1,194 @@
+{
+  "status": "Design finalized; production integration in progress; no Thinking RL optimizer update run",
+  "task": "Pinned RNG-Bench native textual Matching Pairs 4x4; 8 pairs",
+  "model": {
+    "id": "Qwen/Qwen3-4B-Thinking-2507",
+    "revision": "768f209d9ea81521153ed38c47d515654e938aea",
+    "training": "full parameters",
+    "compute": "BF16 projections/attention with recorded FP32 accumulation",
+    "master_and_gradient_dtype": "FP32"
+  },
+  "prompt": {
+    "style": "Native thinking and Action-only final answer; no ICL, memory instructions or Thought requirement",
+    "prefix": "Only immutable initial system message and fixed delimiters; actual baseline P=342; verify same tokenizer/template",
+    "suffix_window": 1024,
+    "positions": "Original monotonically increasing positions; unchanged RoPE",
+    "memory": "Persistent vLLM KV throughout each game; empty suffix between boards"
+  },
+  "episode": {
+    "attempt_cap": 96,
+    "attempts_include_invalid_retries": true,
+    "assistant_tokens_per_turn": null,
+    "raw_transcript_cap": 262144,
+    "reward": "pairs_found / 8 - attempted_responses / 96",
+    "resource_exhaustion_reward": -1,
+    "resource_exhaustions_reported_separately": true,
+    "native_game_rules": "Preserve native retry, invalid-action and reveal behavior"
+  },
+  "learning": {
+    "arms": [
+      "ps"
+    ],
+    "pilot_seed": 11,
+    "pilot_updates": 32,
+    "boards_per_update": 8,
+    "rollouts_per_board": 8,
+    "global_episodes_per_update": 64,
+    "pilot_episodes": 2048,
+    "advantage": "R_k - mean(R_j for j != k), within board; no reward-standard-deviation normalization",
+    "loss_tokens": "Every sampled assistant token, including all thinking and early turns; forced feedback/template tokens have zero direct loss",
+    "trajectory_denominator": 26624,
+    "batch_denominator": 64,
+    "fresh_steps_per_batch": 1,
+    "sampling": {
+      "temperature": 0.6,
+      "top_p": 1.0,
+      "top_k": -1,
+      "reason": "Unfiltered temperature-scaled softmax makes sampled policy and reused score-gradient distribution agree exactly; historical benchmark used top_p=.95/top_k=20 and remains labeled separately"
+    },
+    "optimizer": {
+      "type": "AdamW",
+      "learning_rate": 5e-06,
+      "betas": [
+        0.9,
+        0.95
+      ],
+      "epsilon": 1e-08,
+      "weight_decay": 0,
+      "warmup_updates": 8,
+      "after_warmup": "constant",
+      "max_gradient_norm": 1.0,
+      "state_sharding": "ZeRO-1 on existing vLLM data-parallel process group; replicated FP32 policy masters"
+    },
+    "kl": {
+      "coefficient": 0.01,
+      "estimator": "k3 = exp(reference_logp-policy_logp) - (reference_logp-policy_logp) - 1",
+      "reference": "Frozen original checkpoint with the same PS mask and temperature",
+      "denominator": "Same fixed trajectory and global batch denominators",
+      "execution": "Initial version uses an exact teacher-forced reference/policy KL pass after the generation cohorts; no duplicate task-reward backward. Release generation activation pools before teacher activation offload to avoid double-counting host RAM."
+    }
+  },
+  "execution": {
+    "framework": "Extend PrimeRL orchestrator/optimizer/checkpoint/monitor interfaces with recorded-gradient backend; use the qualified PSStreamingWorker and pinned optimized vLLM source",
+    "policy_updates": "Synchronous; no stale-policy batches",
+    "within_version": "Asynchronous vLLM continuous batching plus background recorded backward; rewards apply to completed score gradients",
+    "requested_gpus": 8,
+    "tensor_parallel": 1,
+    "pipeline_parallel": 1,
+    "data_parallel": 8,
+    "active_trajectories_per_gpu_target": 4,
+    "active_trajectories_node_target": 32,
+    "board_assignment": "One board per GPU on 8-GPU layout; two four-request cohorts produce the eight rollouts; four-GPU fallback handles two boards per GPU while preserving global64",
+    "concurrency_qualification": "Four/GPU is the host-memory ceiling for the current C1024 kernel, not yet a measured 4B GPU fit. Reduce only physical concurrency if full buffer accounting/first actual batch needs it; preserve board/group/global batch and objective. No standalone performance smokes.",
+    "group_storage": "Reduce completed score gradients into CPU G/H accumulators; exact G/(G-1) RLOO correction; discard private GPU gradient once safely reduced",
+    "interactive_rollouts": "Persistent native vLLM request; deterministic environment/template token injection with explicit role/loss masks; preserve sampled thinking, original positions, immutable system prefix and streaming KV. No per-turn cold prefill.",
+    "stream_config": {
+      "window": 1024,
+      "chunk_tokens": 1024,
+      "ring_tokens": 1024,
+      "max_requests": 4,
+      "tail_block_tokens": 16384,
+      "fp32_attention": true,
+      "joint_qkv": true,
+      "direct_weight_gradients": true,
+      "weight_gradient_backend": "triton",
+      "compact_kv": true,
+      "kv_cache": true,
+      "fine_grained_events": true,
+      "gpu_head_staging": true,
+      "stage_scheduling": true,
+      "copy_mode": "sm",
+      "gpu_stages_in_flight": 4,
+      "backward_batch_tokens": 1024,
+      "score_temperature": 0.6,
+      "loss_denominator": 26624
+    },
+    "reference_runtime": "Qualified9e8edea1 with targeted RL adapter changes; no coalesced-transfer experimental fork"
+  },
+  "evaluation": {
+    "decoding": "greedy",
+    "initial": "Same-engine PS validation128 boards and full-context original-checkpoint reference; old sampler/engine benchmark remains separate",
+    "validation_updates": [
+      0,
+      16,
+      32
+    ],
+    "validation_board_seeds": [
+      1100000,
+      1100127
+    ],
+    "checkpoint_selection": "Highest validation efficiency return with earlier update breaking ties",
+    "checkpoint_resume": "Optimizer, scheduler, frozen reference identity, all RNGs, board order and policy version; save every completed update",
+    "pilot_progress": "Return, pairs/8, attempts, generated tokens and known-match utilization; do not hide negative results or resource censors",
+    "after_pilot": "Continue to 256 total updates and remaining training seeds only after reviewing actual learning/throughput; no Full RL initially"
+  },
+  "logging": {
+    "provider": "PrimeRL setup_monitor/WandbMonitor; online W&B run, URL recorded at initialization",
+    "project": "ps-memory",
+    "metrics": [
+      "task return",
+      "pairs/8",
+      "attempts",
+      "completion fraction",
+      "native invalid actions",
+      "format errors",
+      "resource terminations",
+      "policy loss",
+      "k3 KL per token and fixed-normalized KL",
+      "entropy",
+      "reward and advantage mean/std",
+      "zero-advantage group fraction",
+      "learning rate",
+      "gradient norm",
+      "gradient clipping fraction",
+      "weight update norm",
+      "generated/raw tokens",
+      "tokens/s per game and per GPU",
+      "rollout/backward/update/validation times",
+      "peak GPU/KV/pinned-host memory",
+      "transfer/backpressure counters",
+      "backward overlap and tail-drain time",
+      "policy version and staleness",
+      "episodes/tokens/GPU-hours",
+      "known-match utilization by direct-reveal age"
+    ],
+    "artifacts": [
+      "resolved config",
+      "exact source/dependency/model/tokenizer locks",
+      "compressed full token/role/loss/position/log-probability records",
+      "board and generation seeds",
+      "per-update metrics",
+      "resumable and selected checkpoints",
+      "evaluation JSONL",
+      "comparison figures/tables",
+      "example trajectories",
+      "subsequent memory interventions"
+    ]
+  },
+  "resources": {
+    "partition": "yejin",
+    "preemptible": false,
+    "walltime_hours": 24,
+    "primary_job": 153914,
+    "fallback_job": 154204,
+    "ram_gib_primary": 2944,
+    "ram_gib_fallback": 1536,
+    "forecast_observed_pdt": "2026-10-29T16:07:07-07:00",
+    "primary_start_forecast_pdt": "2026-10-30T14:42:57-07:00",
+    "forecast_is_guarantee": false
+  },
+  "implementation_verified_this_turn": [
+    "CPU G/H accumulator placement and exact leave-one-out correction",
+    "Configured-temperature recorded head and fixed-denominator gradient normalization",
+    "Native pinned vLLM supports per-request data-parallel routing and DP process group",
+    "14 CPU objective/gradient checks passed; no new GPU smoke launched"
+  ],
+  "implementation_remaining": [
+    "Persistent-game token controller and system-only prefix metadata in native vLLM",
+    "Connect recorded-gradient backend to PrimeRL rollout/optimizer orchestration and native weight synchronization",
+    "Phase-safe host activation-pool retirement plus reference/KL pass",
+    "W&B initialization and complete metric wiring",
+    "Production checkpoint/resume and launch snapshot; first-learning-data numerical audit",
+    "Actual allocation and real-batch GPU fit/throughput measurement"
+  ]
+}

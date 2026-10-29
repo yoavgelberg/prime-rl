@@ -365,20 +365,21 @@ class RecordedGraphCache:
         )
 
     def head(self, raw, normalized, logits, targets):
+        temperature = getattr(self.model, "recorded_score_temperature", 1.0)
         parameters = self._parameters(self.model.base.model.norm, self.model.base.lm_head)
 
         def run(xs):
             x = xs["raw"].detach().requires_grad_()
             normalized = recorded_rms(x, self.model.base.model.norm, xs["normalized"])
             logits = self._linear(self.model.base.lm_head, normalized, xs["logits"])
-            loss = torch.nn.functional.cross_entropy(logits, xs["targets"], reduction="sum")
+            loss = torch.nn.functional.cross_entropy(logits / temperature, xs["targets"], reduction="sum")
             return (
                 loss.detach(),
                 *torch.autograd.grad(loss, (x, *parameters), allow_unused=True),
             )
 
         result = self._call(
-            ("head",),
+            ("head", temperature),
             run,
             dict(
                 raw=raw.float(),
