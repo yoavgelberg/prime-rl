@@ -15,8 +15,8 @@ from transformers import AutoTokenizer
 from .policy import load_model, StreamingQwen
 
 
-class TranscriptCapacity(RuntimeError):
-    pass
+class TranscriptCapacity(BaseException):
+    """Escape the native runner's broad Exception handler without a fake task error."""
 
 
 def text_content(message):
@@ -182,7 +182,7 @@ Action: <coordinate, e.g. cD>
     metadata = dict(**vars(args),model_revision=Path(args.model).name,
                     upstream=json.loads((source/'SOURCE.json').read_text()),
                     system_prompt=prompts.build_single_system(cot_enabled=False),
-                    thinking_retained=True,max_new_tokens=None,max_responses=None,
+                    thinking_retained=True,max_new_tokens=None,max_responses=args.max_responses,
                     arithmetic='bf16_products_attention_fp32_residual_and_projection_accumulation',
                     scope='Base qualification; no RL or SFT',gpu=torch.cuda.get_device_name())
     (output/f'config-{args.start_seed}.json').write_text(json.dumps(metadata,indent=2))
@@ -196,14 +196,17 @@ Action: <coordinate, e.g. cD>
         try:
             result=run_one_game(model='local',rows=4,cols=4,num_cards=None,seed=seed,render='text',
                 theme=None,assets_dir=str(source/'1_matching_pairs_new/assets'),cell_size=64,
-                out_dir=output/f'seed-{seed}',max_responses=sys.maxsize,max_retries=2,cot_enabled=False)
+                out_dir=output/f'seed-{seed}',max_responses=args.max_responses,max_retries=2,cot_enabled=False)
             assert result.get('error') is None,result
-            row=dict(seed=seed,**result,censored=False)
+            assert result['response_count']<=args.max_responses,result
+            row=dict(seed=seed,**result,censored=False,turn_cap_failure=not result['done'],
+                     terminal_outcome_reward=1. if result['done'] else -1.)
         except TranscriptCapacity as error:
             row=dict(seed=seed,censored=True,reason=str(error),done=False)
         row.update(generated_tokens=sum(r=='assistant' for r in client.roles),
                    raw_transcript_tokens=len(client.tokens),seconds=time.perf_counter()-client.started,
-                   attention=args.attention,window=args.window,generation_seed=generation_seed(seed))
+                   attention=args.attention,window=args.window,generation_seed=generation_seed(seed),
+                   max_responses=args.max_responses)
         client.save(row)
         receipt.write_text(json.dumps(row,indent=2))
         rows.append(row)
@@ -227,6 +230,7 @@ def main():
     parser.add_argument('--window',type=int,default=1024)
     parser.add_argument('--start-seed',type=int,default=1_000_000)
     parser.add_argument('--count',type=int,default=64)
+    parser.add_argument('--max-responses',type=int,default=128)
     parser.add_argument('--transcript-cap',type=int,default=262144)
     parser.add_argument('--temperature',type=float,default=.6)
     parser.add_argument('--top-p',type=float,default=.95)
