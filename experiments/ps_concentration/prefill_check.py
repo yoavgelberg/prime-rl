@@ -45,13 +45,12 @@ def check(base):
             prob_errors.extend((expected.log_softmax(-1).gather(1,labels)-actual.log_softmax(-1).gather(1,labels)).abs().flatten().tolist())
             times.append(dict(iteration=iteration,queued_tokens=block,sequential_seconds=sequential_seconds,
                               chunk_seconds=chunk_seconds,cold_compile_included=iteration==0))
-            assert relative<.01,(name,iteration,relative)
         cache_errors=[float((a.float()-b.float()).norm()/a.float().norm())
                       for a,b in zip(eager.keys,chunked.keys,strict=True)]
-        assert max(cache_errors)<.02,(name,cache_errors)
         for old,new in zip(pinned,chunked.keys,strict=True):
             torch.testing.assert_close(new[:,:,:prefix],old,rtol=0,atol=0)
         results[name]=dict(max_relative_logit_l2=max(errors),max_relative_key_l2=max(cache_errors),
+                           within_probe_tolerance=max(errors)<.01 and max(cache_errors)<.02,
                            top1_logp_mean_abs=sum(prob_errors)/len(prob_errors),top1_logp_max_abs=max(prob_errors),
                            pinned_prefix_exact=True,cache_tokens=chunked.capacity,timings=times)
         del eager,chunked
@@ -62,12 +61,17 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--model',required=True)
     parser.add_argument('--output',required=True)
+    parser.add_argument('--collect-only',action='store_true')
     args=parser.parse_args()
     base=load_model(args.model)
-    result=dict(status='GO',scope='Queued-token append numerical and eviction checks; fresh rollout parity still required',
-                conditions=check(base),gpu=torch.cuda.get_device_name())
+    conditions=check(base)
+    result=dict(status='GO' if all(v['within_probe_tolerance'] for v in conditions.values()) else 'HOLD',
+                scope='Queued-token append numerical and eviction checks; fresh rollout parity still required',
+                conditions=conditions,gpu=torch.cuda.get_device_name(),logit_l2_limit=.01,key_l2_limit=.02)
     Path(args.output).write_text(json.dumps(result,indent=2))
     print(json.dumps(result,indent=2),flush=True)
+    if result['status']!='GO' and not args.collect_only:
+        raise RuntimeError('Probe tolerance missed; all conditions and timings preserved in receipt')
 
 
 if __name__=='__main__':
