@@ -10,6 +10,14 @@ python -m experiments.ps_concentration.rng_overlap train --config ps-config.json
 python -m experiments.ps_concentration.rng_overlap evaluate --config eval-config.json --checkpoint SELECTED_HF_CHECKPOINT --attention ps --split test
 ```
 
+Deferred runs retain the full optimizer snapshot without exporting validation checkpoints. After a completed update, export it on an allocated CPU or GPU node before evaluation:
+
+```bash
+python -m experiments.ps_concentration.export_checkpoint --checkpoint RUN_DIR/ps-seed11/checkpoints/latest.pt
+```
+
+This creates `policy-UPDATE` beside the snapshot, preserving the effective BF16 parameters, tokenizer, native generation stop tokens and training identity. It leaves the optimizer snapshot untouched, writes the export atomically, and records that export performed no validation selection. It refuses snapshots with no completed optimizer update and never replaces an existing export. Use `--reference` only for a relocated copy of the same recorded starting revision.
+
 Configurations use `overlap_config.RunConfig`. Full-context evaluation requires `evaluation_concurrency <= 4`; training targets four recording requests per GPU. The launcher uses 16 inference-only PS validation games per GPU on eight GPUs, or 32 on four GPUs, admitting all 128 validation boards together. The earlier 4B inference benchmark successfully used 60 PS games on one B200; this informs inference concurrency but does not establish native-vLLM performance or backward memory fit. Pure evaluation configurations can use up to 64 games per GPU. Physical GPU count can be four or eight without changing the 64-trajectory training batch, board groups, generation seeds, reward, or denominator. Same-layout optimizer snapshots restore per-rank RNG; changing the physical layout is recorded and does not promise bitwise identity.
 
 Without `--defer-evaluation`, the evaluation-first workflow evaluates the original checkpoint under full attention on the same 128 validation boards as PS update0. Training requires at least 80% matched cards; the CLI also accepts a complete 64-board full screening reference for compatibility. It saves the complete optimizer and FP32 masters after every update, then evaluates 128 validation boards at update 0, every 16 updates, and the final update. Selection uses highest validation efficiency return, preferring the earlier checkpoint on a tie. Interrupted future rollouts are quarantined; completed evaluation episodes are reused only after identity and token-log checksum checks. The pilot emits exact GO/HOLD values for full competence, initial forgetting gap, PS return improvement, and format errors; it does not automatically expand the matrix.
