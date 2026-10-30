@@ -111,7 +111,8 @@ Action: <coordinate, e.g. cD>
             row.update(generated_tokens=chat.generated_tokens, raw_transcript_tokens=len(chat.tokens),
                 seconds=time.perf_counter() - chat.started, engine='vllm-persistent-game')
             chat.finish()
-            record = dict(chat.record(), **row, attention=self.attention, window=self.window,
+            record = dict(chat.record(), **row)
+            record.update(attention=self.attention, window=self.window,
                 temperature=self.temperature, top_p=1., top_k=-1,
                 native_game_json=str(folder / 'native/game.json'),
                 logprob_definition='Unfiltered softmax at recorded temperature; greedy choices are evaluation only')
@@ -122,6 +123,8 @@ Action: <coordinate, e.g. cD>
                 import torch
                 record['peak_allocated_bytes'] = torch.cuda.max_memory_allocated(self.device)
                 record['peak_reserved_bytes'] = torch.cuda.max_memory_reserved(self.device)
+                row['peak_allocated_bytes'] = record['peak_allocated_bytes']
+                row['peak_reserved_bytes'] = record['peak_reserved_bytes']
             temporary = folder / 'tokens.json.gz.tmp'
             with gzip.open(temporary, 'wt', compresslevel=1) as handle:
                 json.dump(record, handle)

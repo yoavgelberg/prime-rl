@@ -14,6 +14,9 @@ from .ps_outcome_worker import OutcomeWorkerMixin
 
 class PSStreamingWorker(OutcomeWorkerMixin, InteractiveWorkerMixin, Worker):
     def load_model(self):
+        from .ps_fa4 import register
+
+        register()
         config = self.vllm_config
         hf = config.model_config.hf_config
         if hf.model_type != "qwen3" or getattr(hf, "attention_dropout", 0):
