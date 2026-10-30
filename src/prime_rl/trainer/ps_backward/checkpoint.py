@@ -110,3 +110,21 @@ def save_pending_gradients(path, model, records, *, policy_version, metadata):
     os.replace(temporary, path)
     return dict(path=str(path), bytes=path.stat().st_size, policy_version=policy_version,
                 episodes=len(records), scope='Task gradient before reference KL; optimizer has not stepped')
+
+
+def restore_pending_gradients(path, model, *, policy_version, expected_metadata):
+    state = torch.load(path, map_location='cpu', weights_only=True)
+    if state['format'] != 'prime-rl-pending-task-gradient-v1' or state['policy_version'] != policy_version:
+        raise ValueError('Pending task gradient policy version or format changed')
+    if state['metadata'] != expected_metadata:
+        raise ValueError('Pending task gradient scientific identity changed')
+    parameters = dict(model.named_parameters())
+    gradients = state['gradients']
+    if parameters.keys() != gradients.keys():
+        raise ValueError('Pending task gradient parameter names changed')
+    if any(gradients[name].shape != parameter.shape or gradients[name].dtype != parameter.dtype
+           for name, parameter in parameters.items()):
+        raise ValueError('Pending task gradient shape or precision changed')
+    for name, parameter in parameters.items():
+        parameter.grad = gradients[name].to(device=parameter.device, copy=True)
+    return state

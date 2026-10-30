@@ -123,6 +123,32 @@ class OutcomeWorkerMixin:
             return save_pending_gradients(Path(path) / f'rank-{rank}.pt', trainer.model,
                 self.ps_train_records, policy_version=trainer.policy_version, metadata=metadata)
 
+    def ps_train_restore_pending(self, path, expected_metadata):
+        from pathlib import Path
+        from prime_rl.trainer.ps_backward.checkpoint import restore_pending_gradients
+        from .ps_capture import _store
+
+        trainer = self.ps_trainer
+        if trainer.materialized or trainer.records or _store.live is not None:
+            raise RuntimeError('Restore pending gradients before admitting new trajectories')
+        rank = self.vllm_config.parallel_config.data_parallel_rank
+        with torch.inference_mode(False):
+            state = restore_pending_gradients(Path(path) / f'rank-{rank}.pt', trainer.model,
+                policy_version=trainer.policy_version, expected_metadata=expected_metadata)
+        rows = state['records']
+        if len(rows) != trainer.config.global_batch_size // trainer.world_size:
+            raise ValueError('Pending gradients require the original GPU replica count')
+        if any(row['rank'] != rank or row['policy_version'] != trainer.policy_version
+               or not row.get('native_capture_mean_loss_error', float('inf')) <= 1e-6 for row in rows):
+            raise ValueError('Pending trajectory rank, policy version or native-loss certificate differs')
+        trainer.records = {row['episode_id']: dict(board=row['board_index'], reward=row['training_return'],
+            generated_tokens=row['generated_tokens'], negative_logp_sum=row['negative_logp_sum']) for row in rows}
+        if len(trainer.records) != len(rows):
+            raise ValueError('Duplicate pending trajectory identity')
+        self.ps_train_records = rows
+        trainer.materialized, self.ps_kl_ready = True, False
+        return dict(policy_version=trainer.policy_version, episodes=len(rows), rank=rank)
+
     def ps_train_reference_kl(self, backend, options):
         if not self.ps_trainer.materialized or self.ps_kl_ready:
             raise RuntimeError('Reference KL must be applied once after task-gradient materialization')
