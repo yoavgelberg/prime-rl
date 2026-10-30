@@ -61,6 +61,14 @@ def load_condition(entry, *, allow_partial=False):
     metrics = episode_metrics(rows)
     metrics['mean_attempts_to_completion'] = float(np.mean([
         row['response_count'] if row['done'] else row.get('max_responses', 96) for row in rows]))
+    if entry.get('summary'):
+        summary = json.loads(Path(entry['summary']).read_text())
+        if (summary['episodes'] != len(rows) or summary['attention'] != entry['attention']
+                or summary['window'] != entry['window']):
+            raise ValueError('System-metric summary belongs to a different evaluation condition')
+        for name in ('peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
+                     'completed_cohort_gpu_hours', 'unfinished_cohort_accounting'):
+            metrics[name] = summary.get(name)
     return dict(entry, **metrics, episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
 
 
@@ -126,8 +134,15 @@ def summarize_manifest(manifest, *, allow_partial=False):
             groups.setdefault(key, []).append(condition)
     aggregate = [dict(policy=key[0], attention=key[1], window=key[2], split=key[3], **seed_summary(rows))
                  for key, rows in groups.items()]
+    interventions = []
+    for entry in manifest.get('interventions', []):
+        summary = json.loads(Path(entry['summary']).read_text())
+        interventions.append(dict(entry, result=summary))
+    accounting = json.loads(Path(manifest['allocation_accounting']).read_text()) if manifest.get('allocation_accounting') else None
     return dict(task='Native RNG-Bench textual Matching Pairs 4x4; efficiency reward pairs/8-attempts/96',
         conditions=conditions, paired_comparisons=comparisons, training_seed_summaries=aggregate,
+        interventions=interventions, allocation_accounting=accounting,
+        accounting_scope=manifest.get('accounting_scope', 'Explicit allocations supplied in the accounting artifact'),
         full_rl_was_required=manifest.get('full_rl_was_required', False),
         interpretation='Base-control comparisons use an untrained checkpoint and do not claim a trained Full RL comparison')
 
@@ -139,7 +154,8 @@ def save_tables(result, output):
         'mean_return', 'mean_pairs', 'matched_fraction', 'completion_rate', 'mean_attempts_to_completion',
         'completed_only_mean_attempts', 'completed_only_denominator', 'mean_attempts', 'format_errors',
         'native_invalid_actions', 'resource_terminations', 'generated_tokens', 'raw_transcript_tokens',
-        'mean_per_game_tokens_per_second']
+        'mean_per_game_tokens_per_second', 'peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
+        'completed_cohort_gpu_hours', 'unfinished_cohort_accounting']
     with (output / 'main-comparison.csv').open('w', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
         writer.writeheader()
@@ -161,6 +177,29 @@ def save_tables(result, output):
     for row in result['paired_comparisons']:
         lines.append(f'- {row["treatment"]} minus {row["sliding_control"]}: {row["mean_difference"]:.4f}, '
             f'95% board-bootstrap interval {row["ci95"]}; full-context gap {row["full_context_gap"]:.4f}; recovery {row["recovery"]}.')
+    if result.get('allocation_accounting') is not None:
+        accounting = result['allocation_accounting']
+        lines += ['', f'Allocation accounting: {accounting["total_allocated_gpu_hours"]:.6f} GPU-hours. {result["accounting_scope"]}.',
+            '', f'By hardware type: {accounting["gpu_hours_by_type"]}. Pending maximum reservations: {accounting["pending_maximum_gpu_hours"]} GPU-hours, charged zero so far.',
+            '', 'Allocation time includes setup, idle, failure and cleanup. Evaluation cohort time excludes setup and is a lower bound when interrupted cohort receipts are incomplete. KV bytes describe the shared physical pool per GPU, including available capacity and block padding.']
+        from .allocation_accounting import save
+        save(accounting, output / 'allocation-accounting')
+    intervention_rows = []
+    for entry in result.get('interventions', []):
+        summary = entry['result']
+        for subset in ('branches', 'conditional_unedited_selects_p'):
+            values = summary[subset]
+            for branch in ('unedited', 'swap', 'sham'):
+                intervention_rows.append(dict(name=entry['name'], training_seed=entry['training_seed'],
+                    subset=subset, branch=branch, denominator=values['denominator'],
+                    qualified_states=summary['qualified_states'], executed_states=summary['executed_states'],
+                    untestable_states=summary['untestable_states'], pending_states=summary['pending_states'],
+                    causal_textual_memory_established=summary['causal_textual_memory_established'], **values[branch]))
+    if intervention_rows:
+        with (output / 'intervention-table.csv').open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(intervention_rows[0]))
+            writer.writeheader(); writer.writerows(intervention_rows)
+        lines += ['', 'Intervention results are in intervention-table.csv, with all qualified-state counts and the unedited-selects-partner subset reported separately. Any unexecuted or untestable states remain visible. No textual-memory conclusion follows from collecting states alone.']
     (output / 'README.md').write_text('\n'.join(lines) + '\n')
 
 

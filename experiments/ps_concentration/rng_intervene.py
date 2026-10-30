@@ -156,18 +156,26 @@ def summarize_results(states, results):
             cold_minus_streaming=float(np.mean(np.array(cold, dtype=float) - streaming)))
         differences = np.array([row['swap']['probability_following_false'] - row['sham']['probability_following_false']
                                 for row in executed])
-        rng = np.random.default_rng(0)
-        means = rng.choice(differences, (10000, len(differences))).mean(-1)
+        boards = sorted({row['board_seed'] for row in executed})
+        sums = np.array([sum(value for row, value in zip(executed, differences, strict=True)
+                             if row['board_seed'] == board) for board in boards])
+        counts = np.array([sum(row['board_seed'] == board for row in executed) for board in boards])
+        interval = None
+        if len(boards) > 1:
+            rng = np.random.default_rng(0)
+            draw = rng.integers(len(boards), size=(10000, len(boards)))
+            means = sums[draw].sum(-1) / counts[draw].sum(-1)
+            interval = [float(value) for value in np.quantile(means, [.025, .975])]
         result['false_association_effect_swap_minus_sham'] = dict(mean=float(differences.mean()),
-            ci95=[float(value) for value in np.quantile(means, [.025, .975])],
-            uncertainty='Bootstrap over intervention states within one policy; not independent training runs')
+            ci95=interval, board_clusters=len(boards),
+            uncertainty='Bootstrap over board seeds retaining all collected states per sampled board; no between-board interval with one board; not independent training runs')
         errors = np.array([row['streaming_parity']['absolute_error'] for row in executed])
         strict = bool(errors.mean() <= .01 and np.quantile(errors, .99) <= .05)
         result['streaming_teacher_parity'] = dict(mean_abs=float(errors.mean()), p99=float(np.quantile(errors, .99)),
             status='GO' if strict else 'HOLD', scope='First coordinate token at every executed intervention state')
         drop = np.mean([row['sham']['probability_correct_partner'] - row['swap']['probability_correct_partner'] for row in executed])
         result['causal_textual_memory_established'] = bool(len(executed) >= 32 and len(executed) == qualified
-            and strict and result['false_association_effect_swap_minus_sham']['ci95'][0] > 0 and drop > 0)
+            and strict and interval is not None and interval[0] > 0 and drop > 0)
     return result
 
 

@@ -63,6 +63,18 @@ def test_incomplete_splits_and_sampled_training_rows_cannot_be_final_results(tmp
         load_condition(condition(tmp_path, rows))
 
 
+def test_system_metrics_cannot_be_taken_from_a_different_attention_condition(tmp_path):
+    summary = tmp_path / 'summary.json'
+    values = dict(episodes=4, attention='ps', window=1024, peak_kv_pool_allocated_bytes=2048,
+        completed_cohort_inference_seconds=10., completed_cohort_gpu_hours=.01, unfinished_cohort_accounting=0)
+    summary.write_text(json.dumps(values))
+    entry = condition(tmp_path, episodes(), summary=str(summary))
+    assert load_condition(entry)['peak_kv_pool_allocated_bytes'] == 2048
+    summary.write_text(json.dumps(dict(values, window=512)))
+    with pytest.raises(ValueError, match='different evaluation condition'):
+        load_condition(entry)
+
+
 def test_base_control_is_not_mislabeled_full_rl_and_small_gap_has_no_recovery(tmp_path):
     treatment = episodes()
     ps = episodes(); full = episodes()

@@ -32,6 +32,16 @@ python -m experiments.ps_concentration.rng_report --manifest result-manifest.jso
 
 The report manifest has `conditions`, `comparisons`, and optional `training_runs` lists. A condition contains `name`, `policy` (`base` or `PS RL`), `training_seed` (null for base), `split`, `attention`, `window`, `greedy:true`, `expected_boards`, and `episodes` (the exact episode JSONL path). A comparison names `treatment`, `sliding_control`, and `full_control` conditions. Training runs identify `training_seed` and `run_dir`. Each condition reports pairs/8, efficiency return, completed-only attempt count/denominator, attempts with incomplete games counted at96, formats, invalid moves, censored runs, tokens and per-game throughput. Reports reject incomplete splits unless explicitly labeled partial. Paired intervals resample board seeds 10,000 times within each training seed; independent training seeds determine training variability. A frozen-base control is explicitly labeled and never called Full RL. The plotter produces validation return versus training episodes, test return versus window, and known-match utilization versus direct-reveal age from saved records. Twenty example traces use fixed board-seed order, retaining all thinking and eviction annotations.
 
+Optional condition `summary` paths attach cohort inference costs and measured physical KV-pool bytes, with board-count/attention identity checks. The manifest can include `interventions:[{name,training_seed,summary}]` to produce the intervention table and `allocation_accounting` plus an explicit `accounting_scope` to attach the full allocation-cost ledger. Reports distinguish accepted optimizer-update compute, inference cohort time, and whole allocation time. Requeued allocations and failed/setup/idle/cleanup time belong in allocation cost; pending reservations consume zero GPU-hours.
+
+Capture costs on HAIC using explicit experiment-owned allocation IDs:
+
+```bash
+python -m experiments.ps_concentration.allocation_accounting --jobs JOB_ID JOB_ID --output ACCOUNTING_DIR --reservations RESERVATIONS.json
+```
+
+The accounting module uses only the standard library. It captures UTC `sacct --duplicates` rows, retains every requeue interval, extends parent intervals for batch/extern cleanup, and never sums steps as separate allocations. Missing restart history is reported as incomplete. B200/H200 hours remain separate; nominal GPU-hour sums do not normalize hardware speed.
+
 Text-memory interventions run only after a trained checkpoint is selected:
 
 ```bash
@@ -42,4 +52,12 @@ python -m experiments.ps_concentration.rng_intervene --checkpoint SELECTED_HF_CH
 
 Collection uses only board seeds4000000–4000511 and stops at128 qualifying states. The cursor is immediately before the first coordinate token of a pending second-pick action. A direct reveal must be older than2W and absent from the retained suffix; sampled scratch must explicitly associate its unmatched partner with the target rank. Conservative coordinate/rank patterns can be supplemented with manual exact token-span annotations via `--annotations`. Notes do not reset reveal age. Untestable qualified states remain in the reported denominator, with the reason recorded.
 
-Every branch independently rebuilds native-effective BF16 model KV from only the prefix and suffix, using original position IDs and exact FA4 PS attention. Edits change sampled scratch only; false-association and unrelated-sham edits preserve both token count and number of changed tokens. The runner reconstructs and clones the native game state, records one greedy next flip and32 stochastic continuations per branch, and audits full-history recomputed likelihood against the actual native streaming choice. Probabilities are Monte Carlo estimates at the training sampling temperature .6. All qualified states and the subset whose unedited greedy action selects the partner are reported separately. A textual-memory conclusion requires at least32 fully executed states, complete qualified-state coverage, strict likelihood parity, and a false-association effect beyond sham edits. CPU checks establish the cache/replay/edit invariants, not a GPU or learned-memory result.
+Every branch independently rebuilds native-effective BF16 model KV from only the prefix and suffix, using original position IDs and exact FA4 PS attention. Edits change sampled scratch only; false-association and unrelated-sham edits preserve both token count and number of changed tokens. The runner reconstructs and clones the native game state, records one greedy next flip and32 stochastic continuations per branch, and audits full-history recomputed likelihood against the actual native streaming choice. Probabilities are Monte Carlo estimates at the training sampling temperature .6. All qualified states and the subset whose unedited greedy action selects the partner are reported separately. Intervention intervals resample boards with every collected state in each sampled board; a one-board collection has no between-board interval. A textual-memory conclusion requires at least32 fully executed states, complete qualified-state coverage, strict likelihood parity, and a false-association effect beyond sham edits. CPU checks establish the cache/replay/edit invariants, not a GPU or learned-memory result.
+
+The completed historical sampled baseline has its own CPU-only scorer:
+
+```bash
+python -m experiments.ps_concentration.baseline_memory_report --run-dir HISTORICAL_PAIRED_ROOT --tokenizer ORIGINAL_SNAPSHOT --output BASELINE_DIAGNOSTICS --workers 8
+```
+
+It verifies all64 paired boards and fixed system-prefix identities, reads only completed native responses, and reports pooled known-match utilization with a paired board bootstrap. The policies visit different decision states; these diagnostics are not a shared-state causal comparison. Historical sampling (temperature .6/top-p .95/top-k20) and custom StreamingQwen arithmetic remain explicit, and are kept separate from the native-vLLM greedy qualification and trained-policy results.

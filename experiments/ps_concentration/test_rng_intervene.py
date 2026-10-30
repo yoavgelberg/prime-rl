@@ -8,7 +8,8 @@ from .test_rng_memory_metrics import CharacterTokenizer
 
 
 def result(index, error=.001):
-    row = dict(state_id=str(index), partner='aA', streaming_action='aA', correct_partners=['aA'],
+    row = dict(state_id=str(index), board_seed=4000000 + index // 8,
+        partner='aA', streaming_action='aA', correct_partners=['aA'],
         streaming_parity=dict(absolute_error=error))
     for branch in ('unedited', 'swap', 'sham'):
         false = branch == 'swap'
@@ -37,6 +38,24 @@ def test_textual_memory_conclusion_requires_states_complete_branches_parity_and_
     assert not module.summarize_results(incomplete, rows)['causal_textual_memory_established']
     untestable = states + [dict(state_id='uneditable', untestable_reason='No sham')]
     assert not module.summarize_results(untestable, rows + [dict(state_id='uneditable')])['causal_textual_memory_established']
+
+
+def test_intervention_uncertainty_clusters_repeated_states_from_the_same_board():
+    states = [dict(state_id=str(index)) for index in range(32)]
+    rows = [result(index) for index in range(32)]
+    for index, row in enumerate(rows):
+        row['board_seed'] = 4000000 + index // 16
+        if index >= 16:
+            row['swap']['probability_following_false'] = 0.
+            row['sham']['probability_following_false'] = 1.
+    effect = module.summarize_results(states, rows)['false_association_effect_swap_minus_sham']
+    assert effect['board_clusters'] == 2
+    assert effect['ci95'] == [-1., 1.]
+    for row in rows:
+        row['board_seed'] = 4000000
+    summary = module.summarize_results(states, rows)
+    assert summary['false_association_effect_swap_minus_sham']['ci95'] is None
+    assert not summary['causal_textual_memory_established']
 
 
 def test_uneditable_qualified_states_stay_in_reported_denominator():
