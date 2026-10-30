@@ -49,7 +49,7 @@ def test_native_multiturn_stream_preserves_tokens_and_only_samples_have_loss(scr
     samples = tokenizer.encode(''.join(bodies))
     cursor, decisions = 0, []
     while cursor < len(samples):
-        decision = client.advance(samples[cursor], -.3, -.5)
+        decision = client.advance(samples[cursor], -.3, -.5, entropy=.75)
         decisions.append(decision)
         if decision.role == 'assistant':
             cursor += 1
@@ -65,6 +65,8 @@ def test_native_multiturn_stream_preserves_tokens_and_only_samples_have_loss(scr
     assert record['positions'] == list(range(len(expected)))
     assert record['tokens'][:len(prefix)] == prefix
     assert sum(record['loss_mask']) == len(samples)
+    assert record['entropy_tokens'] == len(samples)
+    assert record['mean_policy_entropy_at_temperature'] == .75
     assert len(record['turns']) == 2
     assert record['turns'][0]['start'] < len(prefix) + 1024
     assert all((lp is not None) == keep for lp, keep in zip(record['old_tempered_logps'], record['loss_mask']))
@@ -151,10 +153,10 @@ def test_vllm_sample_routing_preserves_forced_mask_and_skips_discarded_prefill()
 
     calls = []
     chats = {
-        'sampled': SimpleNamespace(advance=lambda token, raw, tempered: (
-            calls.append((token, raw, tempered)) or TokenDecision(token, token, 'assistant'))),
-        'forced': SimpleNamespace(advance=lambda *args: TokenDecision(6, -100, 'environment_template')),
-        'prefill': SimpleNamespace(advance=lambda *args: pytest.fail('Discarded partial prefill advanced game')),
+        'sampled': SimpleNamespace(advance=lambda token, raw, tempered, **kwargs: (
+            calls.append((token, raw, tempered, kwargs['entropy'])) or TokenDecision(token, token, 'assistant'))),
+        'forced': SimpleNamespace(advance=lambda *args, **kwargs: TokenDecision(6, -100, 'environment_template')),
+        'prefill': SimpleNamespace(advance=lambda *args, **kwargs: pytest.fail('Discarded partial prefill advanced game')),
     }
     logits = torch.tensor([[1., 2., -1., 3., 0., .5, 4.]]).repeat(3, 1)
     proposals = torch.tensor([[3], [4], [5]])
@@ -165,3 +167,5 @@ def test_vllm_sample_routing_preserves_forced_mask_and_skips_discarded_prefill()
     assert len(calls) == 1
     assert calls[0][1] == pytest.approx(float(logits[0].log_softmax(-1)[3]))
     assert calls[0][2] == pytest.approx(float((logits[0] / .6).log_softmax(-1)[3]))
+
+    assert calls[0][3] == pytest.approx(float(torch.distributions.Categorical(logits=logits[0] / .6).entropy()))

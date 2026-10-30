@@ -104,6 +104,8 @@ Action: <coordinate, e.g. cD>
             if not censored and row['score'] != result['score']:
                 raise ValueError('Offline native score differs from the environment result')
             row['training_return'] = outcome_reward(row, self.max_responses, self.context_exhaustion_reward)
+            row['entropy_tokens'] = chat.entropy_tokens
+            row['mean_policy_entropy_at_temperature'] = chat.entropy_sum / chat.entropy_tokens if chat.entropy_tokens else None
             row['negative_logp_sum'] = -sum(value for value in chat.old_tempered_logps if value is not None)
             row['board_identity_sha256'] = hashlib.sha256(native['config']['ground_truth_text'].encode()).hexdigest()
             row.update(generated_tokens=chat.generated_tokens, raw_transcript_tokens=len(chat.tokens),

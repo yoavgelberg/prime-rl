@@ -1,7 +1,10 @@
-from abc import ABC, abstractmethod
-from typing import Any
+from __future__ import annotations
 
-import verifiers as vf
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import verifiers as vf
 
 
 class Monitor(ABC):

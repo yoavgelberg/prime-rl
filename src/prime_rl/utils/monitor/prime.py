@@ -1,12 +1,13 @@
+from __future__ import annotations
+
 import asyncio
 import os
 import time
 from pathlib import Path
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import verifiers as vf
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from prime_rl.utils.config import PrimeMonitorConfig
@@ -14,6 +15,9 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
 
+
+if TYPE_CHECKING:
+    import verifiers as vf
 
 class PrimeMonitor(Monitor):
     """Logs to Prime Intellect API."""

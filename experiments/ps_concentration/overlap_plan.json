@@ -107,7 +107,7 @@
       "fp32_attention": true,
       "joint_qkv": true,
       "direct_weight_gradients": true,
-      "weight_gradient_backend": "triton",
+      "weight_gradient_backend": "cublas",
       "compact_kv": true,
       "kv_cache": true,
       "fine_grained_events": true,
@@ -179,7 +179,10 @@
       "comparison figures/tables",
       "example trajectories",
       "subsequent memory interventions"
-    ]
+    ],
+    "entity": "tech-ml",
+    "offline": false,
+    "authentication": "Verified read-only API query on HAIC; user completed wandb login; no credentials in source/artifacts"
   },
   "resources": {
     "partition": "yejin",
@@ -189,8 +192,8 @@
     "fallback_job": 154204,
     "ram_gib_primary": 2944,
     "ram_gib_fallback": 1664,
-    "forecast_observed_pdt": "2026-10-29T16:07:07-07:00",
-    "primary_start_forecast_pdt": "2026-10-30T14:42:57-07:00",
+    "forecast_observed_pdt": "2026-10-29T17:12:55-07:00",
+    "primary_start_forecast_pdt": "2026-10-30T14:42:37-07:00",
     "forecast_is_guarantee": false
   },
   "implementation_verified_this_turn": [
@@ -204,14 +207,17 @@
     "27 CPU checks pass, including real Adam update -> in-place BF16/packed-QKV buffer refresh and effective-native-weight RMS gradients",
     "OutcomeTrainer performs one complete-batch GRPO update; two CPU Adam steps match the directly differentiated masked objective with clipping, warmup and added KL gradients",
     "Native fused QKV/MLP weight refresh tested against a real tiny Qwen3; all storage pointers and tied embedding/head identity retained",
-    "30 CPU checks pass; optimizer worker and complete-episode KL code compile but are not GPU-executed"
+    "30 CPU checks pass; optimizer worker and complete-episode KL code compile but are not GPU-executed",
+    "Atomic FP32 master/optimizer snapshots restore the exact next CPU Adam update and CPU RNG; identity/config drift is rejected",
+    "BF16 native checkpoint reload preserves all effective weights and ties, with portable Transformers dtype metadata",
+    "PrimeRL GRPO dispatcher and W&B monitor metric dispatch pass using the 40-package hash-locked framework overlay; no verifier runtime needed for annotation-only imports",
+    "34 combined CPU checks pass; HAIC W&B CLI0.26.0 and authenticated entitytech-ml verified",
+    "Qualified B200 result uses cuBLAS direct weight gradients; launch plan corrected from Triton default to measured cuBLAS backend"
   ],
   "implementation_remaining": [
-    "Finish native engine construction and outer training/evaluation orchestration CLI",
-    "Checkpoint/resume for FP32 masters, consolidated ZeRO-1 state, policy versions, global/request RNG identities and exact configs",
-    "W&B setup_monitor integration and standard/task/systems metrics; install and pin missing framework dependencies",
+    "Finish native engine construction, outer training/evaluation CLI, full metric aggregation and actual online W&B run initialization",
     "Capture final source/environment and install actual pilot lease-next command; no obsolete trainer or smoke autostart",
-    "Validate worker optimizer/graph/KL memory and numerical parity on first actual learning data; no separate GPU smokes",
-    "Initial same-engine full/PS baseline, 32-update pilot and saved validations, then main training/results/interventions"
+    "Validate distributed ZeRO-1 checkpoint/reshard and GPU graph/KL memory/numerics on first real learning data; CPU snapshot tests do not establish GPU execution",
+    "Run initial same-engine full/PS baseline and 32-update pilot, save validations/checkpoints/learning curves, then expand and deliver reports/interventions"
   ]
 }

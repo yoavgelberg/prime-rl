@@ -1,6 +1,9 @@
-from typing import Any
+from __future__ import annotations
 
-import verifiers as vf
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import verifiers as vf
 
 from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor

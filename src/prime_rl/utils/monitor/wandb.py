@@ -1,12 +1,13 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
-import verifiers as vf
 import wandb
 from transformers.tokenization_utils import PreTrainedTokenizer
 
@@ -15,6 +16,9 @@ from prime_rl.utils.logger import get_logger
 from prime_rl.utils.monitor.base import Monitor
 from prime_rl.utils.pydantic_config import BaseSettings
 
+
+if TYPE_CHECKING:
+    import verifiers as vf
 
 class WandbMonitor(Monitor):
     """Logs to Weights and Biases."""

@@ -137,3 +137,74 @@ class OutcomeWorkerMixin:
         self.ps_board_identities.clear()
         self.ps_train_records.clear()
         return dict(**result, optimizer_and_weight_refresh_seconds=time.perf_counter() - started)
+
+    def ps_train_save(self, path, metadata, *, inference_path=None, tokenizer_source=None):
+        from pathlib import Path
+        import torch.distributed as dist
+        from vllm.distributed.parallel_state import get_dp_group
+        from prime_rl.trainer.ps_backward.checkpoint import save_inference, save_snapshot
+        from .ps_capture import _store
+
+        trainer = self.ps_trainer
+        if trainer.materialized or trainer.records or (_store.live is not None and not _store.live.closed):
+            raise RuntimeError('Snapshots require a complete optimizer boundary with no in-flight trajectories')
+        parallel = get_dp_group()
+        rank = parallel.rank_in_group
+        with torch.inference_mode(False):
+            rng = dict(cpu=torch.get_rng_state(), cuda=torch.cuda.get_rng_state(self.device))
+            if parallel.world_size > 1:
+                rngs = [None] * parallel.world_size
+                dist.all_gather_object(rngs, rng, group=parallel.device_group)
+                trainer.optimizer.consolidate_state_dict(to=0)
+            else:
+                rngs = [rng]
+            receipt = None
+            if rank == 0:
+                receipt = save_snapshot(path, trainer.model, trainer.optimizer.state_dict(),
+                    policy_version=trainer.policy_version, outcome_config=trainer.config, rngs=rngs,
+                    metadata=dict(metadata, world_size=parallel.world_size))
+                if inference_path is not None:
+                    if tokenizer_source is None:
+                        raise ValueError('Saving inference weights requires the pinned tokenizer source')
+                    from transformers import AutoTokenizer
+                    tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+                    save_inference(Path(inference_path), trainer.model.base, tokenizer,
+                        policy_version=trainer.policy_version, metadata=metadata)
+            if parallel.world_size > 1:
+                trainer.optimizer._all_state_dicts.clear()
+                dist.barrier(group=parallel.device_group)
+        return dict(policy_version=trainer.policy_version, rank=rank, snapshot=receipt)
+
+    def ps_train_restore(self, path, expected_metadata):
+        import hashlib
+        from vllm.distributed.parallel_state import get_dp_group
+        from prime_rl.trainer.ps_backward.checkpoint import restore_snapshot
+        from .ps_capture import _store
+
+        trainer = self.ps_trainer
+        if _store.live is not None or trainer.records or trainer.materialized:
+            raise RuntimeError('Restore the optimizer before beginning any rollout cohort')
+        parallel = get_dp_group()
+        with torch.inference_mode(False):
+            state = restore_snapshot(path, trainer.model, trainer.optimizer,
+                outcome_config=trainer.config, expected_metadata=expected_metadata)
+            version = int(state['policy_version'])
+            trainer.policy_version = version
+            trainer.model._ps_update_version = version
+            _store.policy_version = version
+            if parallel.rank_in_group < len(state['rngs']):
+                rng = state['rngs'][parallel.rank_in_group]
+                torch.set_rng_state(rng['cpu'])
+                torch.cuda.set_rng_state(rng['cuda'], device=self.device)
+                rng_source = 'saved per-rank CPU/CUDA states'
+            else:
+                identity = f"recorded-grpo-layout-resume:{state['metadata']['training_seed']}:{version}:{parallel.rank_in_group}"
+                seed = int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], 'little') % (2**63 - 1)
+                torch.manual_seed(seed)
+                torch.cuda.manual_seed(seed)
+                rng_source = 'derived for a newly added GPU rank; per-request generation seeds remain layout independent'
+            update_inference_weights(trainer.model.base, runner_model(self.model_runner))
+        torch.cuda.synchronize()
+        return dict(policy_version=version, rank=parallel.rank_in_group, rng_source=rng_source,
+            prior_world_size=len(state['rngs']), current_world_size=parallel.world_size,
+            metadata=state['metadata'])

@@ -32,6 +32,7 @@ class PersistentChat:
         self.final_start, self.turn_start = None, 0
         self.done, self.error, self.resource_reason = False, None, None
         self.generated_tokens = 0
+        self.entropy_sum, self.entropy_tokens = 0., 0
         self.started = time.perf_counter()
         thinking_end = tokenizer.encode('</think>', add_special_tokens=False)
         if len(thinking_end) != 1:
@@ -151,7 +152,7 @@ class PersistentChat:
         self.done = True
         self.condition.notify_all()
 
-    def advance(self, proposed, raw_logp, tempered_logp):
+    def advance(self, proposed, raw_logp, tempered_logp, *, entropy=None):
         """Forced feedback changes tokens, while only actual samples receive labels."""
         with self.condition:
             if not self.condition.wait_for(lambda: self.done or self.queue or self.request is not None,
@@ -168,6 +169,9 @@ class PersistentChat:
                 self._append(token, role)
                 return TokenDecision(token, -100, role)
             self._append(proposed, 'assistant', raw_logp, tempered_logp)
+            if entropy is not None:
+                self.entropy_sum += entropy
+                self.entropy_tokens += 1
             self.sampled.append(proposed)
             self.sample_logps.append(raw_logp)
             if proposed == self.thinking_end:
@@ -210,7 +214,8 @@ class PersistentChat:
             return dict(tokens=self.tokens.copy(), roles=self.roles.copy(), positions=list(range(len(self.tokens))),
                 loss_mask=[role == 'assistant' for role in self.roles], old_logps=self.old_logps.copy(),
                 old_tempered_logps=self.old_tempered_logps.copy(), turns=self.turns.copy(),
-                prefix_length=len(self.prefix), thinking_retained=True)
+                prefix_length=len(self.prefix), thinking_retained=True, entropy_tokens=self.entropy_tokens,
+                mean_policy_entropy_at_temperature=self.entropy_sum / self.entropy_tokens if self.entropy_tokens else None)
 
 
 def route_samples(request_ids, sampled_token_ids, logits, chats, discarded, *, temperature):
@@ -224,9 +229,11 @@ def route_samples(request_ids, sampled_token_ids, logits, chats, discarded, *, t
     raw_logps = selected - raw.logsumexp(-1)
     scaled = raw / temperature
     tempered = scaled.gather(1, samples[:, None])[:, 0] - scaled.logsumexp(-1)
-    values = torch.stack((samples.float(), raw_logps, tempered), dim=-1).tolist()
+    probabilities = scaled.softmax(-1)
+    entropy = scaled.logsumexp(-1) - torch.where(probabilities > 0, probabilities * scaled, 0.).sum(-1)
+    values = torch.stack((samples.float(), raw_logps, tempered, entropy), dim=-1).tolist()
     emitted, targets = [], []
-    for request, (token, raw_logp, tempered_logp), discard in zip(request_ids, values, discarded, strict=True):
+    for request, (token, raw_logp, tempered_logp, entropy), discard in zip(request_ids, values, discarded, strict=True):
         matches = [key for key in chats if request == key or request.startswith(key + '-')]
         if len(matches) != 1:
             raise ValueError(f'Request {request} must identify exactly one native game')
@@ -234,7 +241,7 @@ def route_samples(request_ids, sampled_token_ids, logits, chats, discarded, *, t
             emitted.append(int(token))
             targets.append(-100)
             continue
-        decision = chats[matches[0]].advance(int(token), raw_logp, tempered_logp)
+        decision = chats[matches[0]].advance(int(token), raw_logp, tempered_logp, entropy=entropy)
         emitted.append(decision.token)
         targets.append(decision.target)
     return (torch.tensor(emitted, device=sampled_token_ids.device, dtype=sampled_token_ids.dtype)[:, None],
