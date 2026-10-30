@@ -61,6 +61,7 @@ class GameCohort:
         from common import prompts
         single_normal.make_client = shim.make_client
         prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
+Keep your thoughts brief and concise. Once you have chosen your next move, finish your reasoning.
 After thinking, your entire final answer must be exactly one action line:
 Action: <coordinate, e.g. cD>
 Do not put explanations, analysis, headings, or additional lines in the final answer.
