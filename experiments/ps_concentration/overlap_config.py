@@ -89,6 +89,9 @@ class RunConfig:
             budget_enforcement=('forced_thinking_transition' if self.thinking_budget_transition is not None
                                 else 'stop_without_inserted_format_tokens'),
             temperature=self.temperature, top_p=1., top_k=-1, kl_coefficient=self.kl_coefficient,
+            task_gradient='Native captured activations with PS backward',
+            reference_kl_arithmetic='BF16 NativeTeacher; approximate when strict parity is HOLD',
+            exploratory_teacher_parity_limits=dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6),
             outcome=asdict(OutcomeConfig()), reward='pairs/8-attempts/96; resource exhaustion -1')
 
 

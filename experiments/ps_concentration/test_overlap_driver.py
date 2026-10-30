@@ -142,6 +142,8 @@ def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_
         if method == 'ps_train_materialize':
             return [dict(advantages=[-1., 1.] * 4, zero_advantage_groups=0,
                 normalized_score_surrogate_loss=.01, clipped_grpo_surrogate_at_origin=0.)] * cfg.gpus
+        if method == 'ps_train_save_pending':
+            return [dict(policy_version=0)] * cfg.gpus
         if method == 'ps_train_reference_kl':
             return [dict(kl_sum=0., normalized_kl=0., generated_tokens=800,
                          parity=dict(mean_abs=.001, p99=.01, status='GO'))] * cfg.gpus

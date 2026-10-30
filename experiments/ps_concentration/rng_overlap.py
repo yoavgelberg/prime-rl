@@ -219,7 +219,7 @@ def setup_wandb(config):
     os.environ['WANDB_MODE'] = 'online'
     setup_logger('INFO')
     monitor = setup_monitor(wandb_config=WandbConfig(project=config.wandb_project,
-        name=f'Qwen3-4B-Thinking PS GRPO seed {config.seed}', id=config.wandb_id, offline=False),
+        name=f'Qwen3-4B-Thinking PS GRPO seed {config.seed}' + (' (exploratory teacher KL)' if config.allow_numerical_target_miss else ''), id=config.wandb_id, offline=False),
         output_dir=Path(config.output), run_config=config)
     wandb.define_metric('train/update')
     wandb.define_metric('train/*', step_metric='train/update')
@@ -341,6 +341,12 @@ async def train(config, engine, monitor, competence=None, *, defer_evaluation=Fa
                 reductions.append(await worker_rpc(engine, 'ps_train_reduce', timeout=1800.))
                 await runner.release()
         materialized = await worker_rpc(engine, 'ps_train_materialize', timeout=1800.)
+        if update <= 2:
+            pending = await worker_rpc(engine, 'ps_train_save_pending', timeout=1800., kwargs=dict(
+                path=str(output / 'pending-task-gradient' / f'update-{update:04d}'), metadata=identity))
+            write_json(output / 'pending-task-gradient' / f'update-{update:04d}.json', dict(
+                policy_version=version, reports=reports, reductions=reductions,
+                materialized=materialized, files=pending, identity=identity))
         kl_reports = await worker_rpc(engine, 'ps_train_reference_kl', timeout=43200., kwargs=dict(
             backend='experiments.ps_concentration.rng_overlap_loss.accumulate_kl', options=dict(
                 reference_checkpoint=config.model, output=str(output / 'parity' / f'update-{update:04d}'),

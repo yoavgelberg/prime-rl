@@ -93,3 +93,20 @@ def save_inference(path, model, tokenizer, *, policy_version, metadata):
         storage='Native vLLM effective BF16 weights, including embeddings and normalization; FP32 masters in optimizer snapshot')
     (path / 'experiment.json').write_text(json.dumps(receipt, indent=2) + '\n')
     return receipt
+
+
+def save_pending_gradients(path, model, records, *, policy_version, metadata):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    gradients = {}
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            raise ValueError('Pending task gradients must cover all trainable parameters')
+        gradients[name] = parameter.grad.detach().to(device='cpu', copy=True)
+    state = dict(format='prime-rl-pending-task-gradient-v1', policy_version=policy_version,
+                 gradients=gradients, records=records, metadata=metadata)
+    temporary = path.with_suffix('.pt.tmp')
+    torch.save(state, temporary)
+    os.replace(temporary, path)
+    return dict(path=str(path), bytes=path.stat().st_size, policy_version=policy_version,
+                episodes=len(records), scope='Task gradient before reference KL; optimizer has not stepped')

@@ -9,9 +9,19 @@ import numpy as np
 import torch
 
 from .activation_offload import activation_offload
-from .check_policy import accept_parity, teacher_logps
+from .check_policy import teacher_logps
 from .objective import sampled_kl
 from .policy import load_model
+
+
+def accept_training_audit(audit, records, exploratory):
+    native_errors = [row.get('native_capture_mean_loss_error', float('inf')) for row in records]
+    if not native_errors or not all(error <= 1e-6 for error in native_errors):
+        return False
+    if audit['status'] == 'GO':
+        return True
+    return (exploratory and audit['mean_abs'] <= .03 and audit['p99'] <= .35
+            and audit['max_abs'] <= 2.)
 
 
 def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_checkpoint,
@@ -69,9 +79,14 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
         initial_policy=initial_policy, exploratory_target_miss_allowed=allow_numerical_target_miss,
         arithmetic='Native effective BF16 projections/embeddings/norm weights, FP32 pre-round fused residual sums, BF16 RoPE cache')
     audit['status'] = 'GO' if audit['mean_abs'] <= .01 and audit['p99'] <= .05 else 'HOLD'
+    audit['native_capture_max_mean_loss_error'] = max(row.get('native_capture_mean_loss_error', float('inf')) for row in records)
+    audit['exploratory_limits'] = dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6)
+    audit['teacher_kl_approximate'] = audit['status'] != 'GO'
+    audit['training_runtime_accepted'] = accept_training_audit(audit, records, allow_numerical_target_miss)
     (output / 'rollout-teacher-parity.json').write_text(json.dumps(audit, indent=2) + '\n')
-    if not accept_parity(audit, allow_numerical_target_miss):
+    if not audit['training_runtime_accepted']:
         raise RuntimeError(f'Recomputed policy likelihood audit failed before optimizer update: {audit}')
+    print(json.dumps(dict(event='reference_kl_audit', **audit)), flush=True)
     return dict(kl_sum=kl_sum, generated_tokens=tokens,
         normalized_kl=kl_sum / (outcome_config.denominator * outcome_config.global_batch_size),
         kl_per_generated_token=kl_sum / tokens, reference_kl_seconds=time.perf_counter() - started,

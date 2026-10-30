@@ -70,6 +70,10 @@ class OutcomeWorkerMixin:
                 trainer.add(identity, board, stream.gradients, row['training_return'],
                     policy_version=trainer.policy_version, generated_tokens=row['generated_tokens'],
                     negative_logp_sum=row['negative_logp_sum'])
+                mean_loss_error = abs(float(stream.loss) - row['negative_logp_sum']) / stream.loss_tokens
+                if not mean_loss_error <= 1e-6:
+                    raise ValueError('Native captured policy loss differs from its actual sampled likelihoods')
+                row['native_capture_mean_loss_error'] = mean_loss_error
                 audits.append(dict(episode_id=identity, direct_loss_tokens=stream.loss_tokens,
                     rollout_negative_logp_sum=row['negative_logp_sum'], recorded_negative_logp_sum=float(stream.loss),
                     mean_sum_error=abs(float(stream.loss) - row['negative_logp_sum']) / stream.loss_tokens))
@@ -106,6 +110,18 @@ class OutcomeWorkerMixin:
         self.ps_kl_ready = self.ps_kl_coefficient == 0
         return dict(**result, generation_host_pools_released=True,
             gpu_allocated_bytes=torch.cuda.memory_allocated())
+
+    def ps_train_save_pending(self, path, metadata):
+        from pathlib import Path
+        from prime_rl.trainer.ps_backward.checkpoint import save_pending_gradients
+
+        trainer = self.ps_trainer
+        if not trainer.materialized or self.ps_kl_ready:
+            raise RuntimeError('Save pending task gradients after materialization and before reference KL')
+        rank = self.vllm_config.parallel_config.data_parallel_rank
+        with torch.inference_mode(False):
+            return save_pending_gradients(Path(path) / f'rank-{rank}.pt', trainer.model,
+                self.ps_train_records, policy_version=trainer.policy_version, metadata=metadata)
 
     def ps_train_reference_kl(self, backend, options):
         if not self.ps_trainer.materialized or self.ps_kl_ready:
