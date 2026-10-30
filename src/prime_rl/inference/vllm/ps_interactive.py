@@ -20,12 +20,17 @@ class TokenDecision:
 
 class PersistentChat:
     def __init__(self, tokenizer, *, eos_token_ids, transcript_cap, timeout=60., on_turn=None,
-                 thinking_token_limit=None):
+                 thinking_token_limit=None, force_action_prefix=False, action_token_limit=None):
         self.tokenizer, self.eos = tokenizer, set(eos_token_ids)
         self.transcript_cap, self.timeout, self.on_turn = transcript_cap, timeout, on_turn
         if thinking_token_limit is not None and (type(thinking_token_limit) is not int or thinking_token_limit < 1):
             raise ValueError('Thinking token limit must be a positive integer or None')
         self.thinking_token_limit = thinking_token_limit
+        if action_token_limit is not None and (type(action_token_limit) is not int or action_token_limit < 1):
+            raise ValueError('Action token limit must be a positive integer or None')
+        self.action_token_limit, self.force_action_prefix = action_token_limit, force_action_prefix
+        self.action_prefix = tokenizer.encode('\nAction:', add_special_tokens=False)
+        self.action_tokens = 0
         self.thinking_tokens, self.thinking_budget_forced = 0, False
         self.condition = Condition()
         self.ready = Event()
@@ -115,6 +120,7 @@ class PersistentChat:
             self.sampled, self.sample_logps, self.final_start = [], [], None
             self.sampled_positions = []
             self.thinking_tokens, self.thinking_budget_forced = 0, False
+            self.action_tokens = 0
             self.turn_start = len(self.tokens) + len(self.queue)
             self.turn_started = time.perf_counter()
             self.ready.set()
@@ -141,6 +147,8 @@ class PersistentChat:
             content=final.strip(), seconds=time.perf_counter() - self.turn_started,
             sampled_positions=self.sampled_positions.copy(), thinking_tokens=self.thinking_tokens,
             thinking_token_limit=self.thinking_token_limit, thinking_budget_forced=self.thinking_budget_forced)
+        turn.update(action_tokens=self.action_tokens, action_token_limit=self.action_token_limit,
+                    force_action_prefix=self.force_action_prefix)
         self.turns.append(turn)
         if self.on_turn is not None:
             self.on_turn(turn)
@@ -187,7 +195,10 @@ class PersistentChat:
                 self._append(self.thinking_end, 'thinking_budget')
                 self.final_start = len(self.tokens)
                 self.thinking_budget_forced = True
+                if self.force_action_prefix:
+                    self.queue.extend((token, 'action_template') for token in self.action_prefix)
                 return TokenDecision(self.thinking_end, -100, 'thinking_budget')
+            was_final = self.final_start is not None
             self._append(proposed, 'assistant', raw_logp, tempered_logp)
             self.sampled_positions.append(len(self.tokens) - 1)
             if entropy is not None:
@@ -195,15 +206,21 @@ class PersistentChat:
                 self.entropy_tokens += 1
             self.sampled.append(proposed)
             self.sample_logps.append(raw_logp)
-            if proposed == self.thinking_end:
+            if was_final:
+                self.action_tokens += 1
+            if proposed == self.thinking_end and not was_final:
                 self.final_start = len(self.tokens)
-            elif self.final_start is None and proposed not in self.eos:
+                if self.force_action_prefix:
+                    self.queue.extend((token, 'action_template') for token in self.action_prefix)
+            elif not was_final and proposed not in self.eos:
                 self.thinking_tokens += 1
             stop = 'eos' if proposed in self.eos else None
             if stop is None and proposed == self.newline and self.final_start is not None:
                 final = self.tokenizer.decode(self.tokens[self.final_start:], skip_special_tokens=True)
                 if re.search(r'(?:^|\n)Action:\s*[a-z][A-Z][ \t]*\n', final):
                     stop = 'action_line'
+            if stop is None and self.action_token_limit is not None and self.action_tokens >= self.action_token_limit:
+                stop = 'action_token_limit'
             if stop is not None:
                 self._end_turn(stop)
             return TokenDecision(proposed, proposed, 'assistant')
@@ -239,6 +256,7 @@ class PersistentChat:
                 old_tempered_logps=self.old_tempered_logps.copy(), turns=self.turns.copy(),
                 prefix_length=len(self.prefix), thinking_retained=True, entropy_tokens=self.entropy_tokens,
                 thinking_token_limit=self.thinking_token_limit,
+                action_token_limit=self.action_token_limit, force_action_prefix=self.force_action_prefix,
                 thinking_budget_forced_turns=sum(turn['thinking_budget_forced'] for turn in self.turns),
                 mean_policy_entropy_at_temperature=self.entropy_sum / self.entropy_tokens if self.entropy_tokens else None)
 

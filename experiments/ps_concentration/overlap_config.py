@@ -23,6 +23,8 @@ class RunConfig:
     evaluation_concurrency: int = 16
     parallel_rank_collection: bool = False
     thinking_token_limit: int | None = None
+    action_token_limit: int | None = None
+    force_action_prefix: bool = False
     seed: int = 11
     updates: int = 32
     window: int = 1024
@@ -47,6 +49,8 @@ class RunConfig:
             raise ValueError('Parallel rank collection is a physical-layout boolean setting')
         if self.thinking_token_limit is not None and (type(self.thinking_token_limit) is not int or self.thinking_token_limit < 1):
             raise ValueError('Thinking token limit must be a positive integer or None')
+        if self.action_token_limit is not None and (type(self.action_token_limit) is not int or self.action_token_limit < 1):
+            raise ValueError('Action token limit must be a positive integer or None')
         if type(self.window) is not int or self.window < 1:
             raise ValueError('Window size must be a positive token count')
         if Path(self.model).name != self.revision:
@@ -79,6 +83,7 @@ class RunConfig:
             training_seed=self.seed, reference_checkpoint=self.model, window=self.window,
             transcript_cap=self.transcript_cap, max_responses=self.max_responses,
             thinking_token_limit=self.thinking_token_limit,
+            action_token_limit=self.action_token_limit, force_action_prefix=self.force_action_prefix,
             temperature=self.temperature, top_p=1., top_k=-1, kl_coefficient=self.kl_coefficient,
             outcome=asdict(OutcomeConfig()), reward='pairs/8-attempts/96; resource exhaustion -1')
 
