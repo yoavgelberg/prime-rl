@@ -1,5 +1,5 @@
 {
-  "status": "Design finalized; production integration in progress; no Thinking RL optimizer update run",
+  "status": "Production command captured and installed as source a3; 62 CPU checks passed; GPU checks and Thinking RL results pending",
   "task": "Pinned RNG-Bench native textual Matching Pairs 4x4; 8 pairs",
   "model": {
     "id": "Qwen/Qwen3-4B-Thinking-2507",
@@ -119,11 +119,16 @@
       "score_temperature": 0.6,
       "loss_denominator": 26624
     },
-    "reference_runtime": "Qualified9e8edea1 with targeted RL adapter changes; no coalesced-transfer experimental fork"
+    "reference_runtime": "Qualified9e8edea1 with targeted RL adapter changes; no coalesced-transfer experimental fork",
+    "inference_only_validation_concurrency": {
+      "eight_gpu": 16,
+      "four_gpu": 32,
+      "reason": "Admit all128 validation boards together; prior4B PS inference succeeded at60games/GPU, not a native fit/throughput measurement"
+    }
   },
   "evaluation": {
     "decoding": "greedy",
-    "initial": "Same-engine PS validation128 boards and full-context original-checkpoint reference; old sampler/engine benchmark remains separate",
+    "initial": "Full and PS original-checkpoint evaluations on the identical 128 validation boards, native vLLM engine and greedy decoding; historical 64-board sampled/hybrid benchmark remains separate",
     "validation_updates": [
       0,
       16,
@@ -212,12 +217,21 @@
     "BF16 native checkpoint reload preserves all effective weights and ties, with portable Transformers dtype metadata",
     "PrimeRL GRPO dispatcher and W&B monitor metric dispatch pass using the 40-package hash-locked framework overlay; no verifier runtime needed for annotation-only imports",
     "34 combined CPU checks pass; HAIC W&B CLI0.26.0 and authenticated entitytech-ml verified",
-    "Qualified B200 result uses cuBLAS direct weight gradients; launch plan corrected from Triton default to measured cuBLAS backend"
+    "Qualified B200 result uses cuBLAS direct weight gradients; launch plan corrected from Triton default to measured cuBLAS backend",
+    "Complete native vLLM outer pilot/evaluation CLI and lease commands captured; original and fallback queue ages preserved",
+    "62 combined CPU checks pass, including original-position cold-cache continuation through35evictions, exact equal-length scratch/sham edits, paired board bootstrap and independent training-seed statistics",
+    "Pinned native-game replay and independent next-flip clones CPU-checked at20actualhistorical second-pick states, including1invalidmove; no model inference",
+    "Result and intervention CLIs implemented; no GPU intervention or learned-memory conclusion yet"
   ],
   "implementation_remaining": [
-    "Finish native engine construction, outer training/evaluation CLI, full metric aggregation and actual online W&B run initialization",
-    "Capture final source/environment and install actual pilot lease-next command; no obsolete trainer or smoke autostart",
-    "Validate distributed ZeRO-1 checkpoint/reshard and GPU graph/KL memory/numerics on first real learning data; CPU snapshot tests do not establish GPU execution",
-    "Run initial same-engine full/PS baseline and 32-update pilot, save validations/checkpoints/learning curves, then expand and deliver reports/interventions"
-  ]
+    "Run initial same-engine paired full/PS baseline and first real learning-data GPU audits; no extra infrastructure smokes",
+    "Execute pilot, inspect actual learning, memory, utilization and walltime, then continue authorized main scope if justified",
+    "Verify distributed GPU ZeRO-1 checkpoint/reshard, gradient/likelihood consistency and recorded graph updates on real data",
+    "Complete selected-checkpoint held-out evaluations, three-seed comparisons, scientific figures/tables, size generalization and actual text interventions; report negative results and limitations honestly"
+  ],
+  "source_capture": {
+    "commit": "8b30d6a6072974fa3cfd3edbcba73820ef906fa1",
+    "sha256": "676f9a208219c174292fd75b5c06ac0053bd589bd2f31e8ed5bb4e89767a966a",
+    "remote": "/hai/scratch/gelberg/ps/concentration/source-overlap-grpo-a3"
+  }
 }
