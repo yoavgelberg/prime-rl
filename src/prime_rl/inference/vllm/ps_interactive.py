@@ -72,6 +72,8 @@ class PersistentChat:
     def chat(self, messages):
         with self.condition:
             self._check()
+            if self.done and self.resource_reason is not None:
+                raise TranscriptLimit(self.resource_reason)
             if self.done or self.request is not None:
                 raise RuntimeError('Native chat calls must be serial within a game')
             new = [dict(role=m['role'], content=self._text(m)) for m in messages[self.seen:]]

@@ -1,5 +1,5 @@
 import re
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 
@@ -135,6 +135,48 @@ def test_context_limit_keeps_partial_thinking_losses_and_censors_native_runner()
     assert sum(record['loss_mask']) == 7
     assert record['turns'][0]['stop_condition'] == 'transcript_capacity'
     assert client.status()['resource_reason'] is not None
+
+
+def test_engine_limit_between_completed_response_and_next_feedback_keeps_resource_censoring():
+    tokenizer = ChatTokenizer()
+    messages = [dict(role='system', content='Rules'), dict(role='user', content='Board')]
+    script = tokenizer.encode('aA was revealed.\n</think>\nAction: aA\n')
+    prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+    client = PersistentChat(tokenizer, eos_token_ids=[1003,1004], transcript_cap=len(prompt) + len(script), timeout=3)
+    ended, resume = Event(), Event()
+    responses, errors = [], []
+
+    def play():
+        try:
+            response = client.chat(messages)
+            responses.append(response)
+            ended.set()
+            assert resume.wait(3)
+            client.chat([*messages, dict(role='assistant', content=response['content']),
+                         dict(role='user', content='Second pick')])
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            client.finish()
+
+    worker = Thread(target=play, daemon=True)
+    worker.start()
+    client.initial_prompt()
+    cursor = 0
+    while cursor < len(script):
+        if client.advance(script[cursor], -.3, -.5).target != -100:
+            cursor += 1
+    assert ended.wait(3)
+    client.exhaust()
+    resume.set()
+    worker.join(3)
+    assert not worker.is_alive()
+    assert len(errors) == 1 and isinstance(errors[0], TranscriptLimit)
+    record = client.record()
+    assert len(record['tokens']) == client.transcript_cap
+    assert len(record['turns']) == 1 and record['turns'][0]['stop_condition'] == 'action_line'
+    assert sum(record['loss_mask']) == len(script)
+    assert responses[0]['content'] == 'Action: aA'
 
 
 def test_bad_native_feedback_fails_instead_of_mutating_prefix():

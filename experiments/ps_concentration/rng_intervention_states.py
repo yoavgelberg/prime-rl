@@ -45,45 +45,65 @@ def associations(record, tokenizer, start, end, manual=()):
         tokens = record['tokens'][position:finish]
         text = tokenizer.decode(tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
         for match in ASSOCIATION.finditer(text):
-            line = text[text.rfind('\n', 0, match.start()) + 1:match.start()]
+            line_end = text.find('\n', match.end())
+            line = text[text.rfind('\n', 0, match.start()) + 1:line_end if line_end >= 0 else len(text)]
             if action_line(line):
                 continue
             lo, hi = [boundary(tokenizer, tokens, character) for character in match.span(1)]
             coordinate = match[1]
             if lo is None or hi is None or not re.fullmatch(r'[a-d][A-D]', coordinate):
                 continue
-            notes.append(dict(position=coordinate, rank=match[2], start=position + lo, end=position + hi,
+            notes.append(dict(position=coordinate, surface=coordinate, rank=match[2], start=position + lo, end=position + hi,
                 recognition='Explicit generated coordinate:rank, coordinate=rank, coordinate->rank, or coordinate is rank'))
         position = finish
     for item in manual:
         lo, hi = item['start'], item['end']
+        surface = item.get('surface', item['position'])
+        if not re.fullmatch(r'[a-d][A-D]', item['position']) or not surface or '\n' in surface:
+            raise ValueError('Manual annotations need a native board position and a single-line coordinate surface')
         if not start <= lo < hi <= end or not all(role == 'assistant' for role in record['roles'][lo:hi]):
             raise ValueError('Manual associations must be inside retained sampled scratch work')
-        if tokenizer.decode(record['tokens'][lo:hi], skip_special_tokens=False) != item['position']:
+        if tokenizer.decode(record['tokens'][lo:hi], skip_special_tokens=False) != surface:
             raise ValueError('Manual coordinate annotation does not match the original token span')
         for turn in record['turns']:
             if turn['start'] <= lo < turn['end']:
                 before = tokenizer.decode(record['tokens'][turn['start']:lo], skip_special_tokens=False)
-                if action_line(before.rsplit('\n', 1)[-1]):
+                after = tokenizer.decode(record['tokens'][lo:turn['end']], skip_special_tokens=False)
+                if action_line(before.rsplit('\n', 1)[-1] + after.split('\n', 1)[0]):
                     raise ValueError('A manual note edit cannot alter a past action line')
-        notes.append(dict(item, rank=str(item['rank']), recognition='Manual association annotation; exact sampled-token span'))
+        notes = [note for note in notes if (note['start'], note['end']) != (lo, hi)]
+        notes.append(dict(item, surface=surface, rank=str(item['rank']),
+                          recognition='Manual association annotation; exact sampled surface mapped to native position'))
     unique = {(item['start'], item['end'], item['position'], item['rank']): item for item in notes}
     return sorted(unique.values(), key=lambda item: item['start'])
 
 
 def swap_edits(notes, first, second, record, tokenizer):
     edits = []
+    surfaces = {position:{item.get('surface', position) for item in notes if item['position'] == position}
+                for position in (first, second)}
     for item in notes:
         if item['position'] not in (first, second):
             continue
         replacement = second if item['position'] == first else first
         lo, hi = item['start'], item['end']
         old = record['tokens'][lo:hi]
-        new = tokenizer.encode(replacement, add_special_tokens=False)
-        if len(new) != len(old) or tokenizer.decode(old, skip_special_tokens=False) != item['position']:
+        surface = item.get('surface', item['position'])
+        if surface == item['position']:
+            replacement_surface = replacement
+        elif replacement in item.get('replacement_surfaces', {}):
+            replacement_surface = item['replacement_surfaces'][replacement]
+        elif len(surfaces[replacement]) == 1:
+            replacement_surface = next(iter(surfaces[replacement]))
+        else:
+            return None
+        if not replacement_surface or '\n' in replacement_surface:
+            raise ValueError('A replacement coordinate surface must fit one scratch-work line')
+        new = tokenizer.encode(replacement_surface, add_special_tokens=False)
+        if len(new) != len(old) or tokenizer.decode(old, skip_special_tokens=False) != surface:
             return None
         edits.append(dict(start=lo, end=hi, old=old, new=new, association=item,
-                          replacement_position=replacement))
+                          replacement_position=replacement, replacement_surface=replacement_surface))
     return edits or None
 
 
