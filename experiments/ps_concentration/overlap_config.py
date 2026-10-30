@@ -21,6 +21,7 @@ class RunConfig:
     gpus: int = 8
     concurrency: int = 4
     evaluation_concurrency: int = 16
+    parallel_rank_collection: bool = False
     seed: int = 11
     updates: int = 32
     window: int = 1024
@@ -41,6 +42,8 @@ class RunConfig:
             raise ValueError('The fixed eight-board batch requires 1, 2, 4 or 8 GPU replicas')
         if self.concurrency not in range(1, 5) or self.evaluation_concurrency not in range(1, 65):
             raise ValueError('Training concurrency must fit the audited host-memory ceiling of four')
+        if type(self.parallel_rank_collection) is not bool:
+            raise ValueError('Parallel rank collection is a physical-layout boolean setting')
         if type(self.window) is not int or self.window < 1:
             raise ValueError('Window size must be a positive token count')
         if Path(self.model).name != self.revision:

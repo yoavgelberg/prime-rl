@@ -16,6 +16,7 @@ from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 
 from .control import handoff_requested
 from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, permutation, protocol_lock, training_specs
+from .rank_collection import RankCollector
 
 
 FACTORY = 'experiments.ps_concentration.rng_vllm.GameCohort'
@@ -249,6 +250,7 @@ async def train(config, engine, monitor, competence=None, *, defer_evaluation=Fa
     if config.window != 1024:
         raise ValueError('The training window is frozen at 1024; window sweeps are evaluation only')
     output, runner = Path(config.output), GameRolloutRunner(engine)
+    rank_collector = RankCollector(engine, config.gpus) if config.parallel_rank_collection else None
     initialized = await worker_rpc(engine, 'ps_train_initialize', kwargs=dict(config=dict(
         optimizer=dict(betas=[.9, .95], epsilon=1e-8), outcome=asdict(OutcomeConfig()),
         kl_coefficient=config.kl_coefficient)))
@@ -322,13 +324,19 @@ async def train(config, engine, monitor, competence=None, *, defer_evaluation=Fa
         specs = training_specs(config, update, boards)
         specs = [dict(spec, policy_version=version, policy_identity=f'{config.wandb_id}:update-{version}') for spec in specs]
         write_json(output / 'rollout-plans' / f'update-{update:04d}.json', specs)
-        reports, reductions = [], []
-        for batch in cohorts(specs, config.gpus, config.concurrency):
-            report = await runner.collect(FACTORY, worker_options(config, batch,
-                output / 'rollouts' / f'update-{update:04d}'), backward=True, policy_version=version)
-            reports.append(report)
-            reductions.append(await worker_rpc(engine, 'ps_train_reduce', timeout=1800.))
-            await runner.release()
+        rollout_output = output / 'rollouts' / f'update-{update:04d}'
+        if rank_collector is not None:
+            reports, reductions = await rank_collector.collect(specs, concurrency=config.concurrency,
+                factory=FACTORY, policy_version=version,
+                options_factory=lambda batch, rank: worker_options(config, batch, rollout_output / f'rank-{rank}'))
+        else:
+            reports, reductions = [], []
+            for batch in cohorts(specs, config.gpus, config.concurrency):
+                report = await runner.collect(FACTORY, worker_options(config, batch,
+                    rollout_output), backward=True, policy_version=version)
+                reports.append(report)
+                reductions.append(await worker_rpc(engine, 'ps_train_reduce', timeout=1800.))
+                await runner.release()
         materialized = await worker_rpc(engine, 'ps_train_materialize', timeout=1800.)
         kl_reports = await worker_rpc(engine, 'ps_train_reference_kl', timeout=43200., kwargs=dict(
             backend='experiments.ps_concentration.rng_overlap_loss.accumulate_kl', options=dict(
