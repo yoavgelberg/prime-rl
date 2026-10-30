@@ -56,8 +56,9 @@ def test_engine_memory_and_position_configuration(tmp_path):
     assert 'rope_scaling' not in ps['hf_overrides'] and 'max_position_embeddings' not in ps['hf_overrides']
     full = driver.engine_options(replace(cfg, evaluation_concurrency=4), attention='full')
     assert full['kv_cache_memory_bytes'] < 145 * 1024**3
-    assert full['attention_backend'] == 'FLASH_ATTN'
-    assert full['hf_overrides']['sliding_window'] is None
+    assert full['attention_backend'] == 'CUSTOM'
+    assert full['hf_overrides']['sliding_window'] == cfg.transcript_cap
+    assert full['additional_config']['ps_streaming']['window'] == cfg.transcript_cap
     with pytest.raises(ValueError, match='four live'):
         driver.engine_options(cfg, attention='full')
 

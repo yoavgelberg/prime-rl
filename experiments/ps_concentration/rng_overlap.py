@@ -43,7 +43,7 @@ def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False)
     if attention == 'full':
         if maximum > 4:
             raise ValueError('Full-context evaluation requires at most four live games per B200')
-        stream = replace(stream, max_requests=1)
+        stream = replace(stream, max_requests=1, window=config.transcript_cap)
         cache = bytes_per_token * (math.ceil(config.transcript_cap / 128) + 1) * 128 * maximum
     else:
         cache = max(2 * 1024**3, bytes_per_token * (512 + config.window + 256) * maximum)
@@ -54,10 +54,10 @@ def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False)
         max_model_len=config.transcript_cap, max_num_seqs=maximum, max_num_batched_tokens=1024,
         block_size=128, enable_chunked_prefill=True, enable_prefix_caching=False,
         kv_cache_memory_bytes=cache,
-        hf_overrides=dict(use_sliding_window=attention == 'ps',
-                          sliding_window=config.window if attention == 'ps' else None),
+        hf_overrides=dict(use_sliding_window=True,
+                          sliding_window=config.window if attention == 'ps' else config.transcript_cap),
         additional_config=dict(ps_streaming=asdict(stream)),
-        attention_backend='CUSTOM' if attention == 'ps' else 'FLASH_ATTN',
+        attention_backend='CUSTOM',
         cudagraph_capture_sizes=[size for size in (1, 2, 4, 8, 16, 32, 64) if size <= maximum])
 
 
