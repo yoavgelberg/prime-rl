@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from experiments.ps_concentration.overlap_config import RunConfig, cohorts, evaluation_specs, permutation, training_specs
+from experiments.ps_concentration.overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, permutation, training_specs
 from experiments.ps_concentration import rng_overlap as driver
 
 
@@ -60,6 +60,54 @@ def test_engine_memory_and_position_configuration(tmp_path):
     assert full['hf_overrides']['sliding_window'] is None
     with pytest.raises(ValueError, match='four live'):
         driver.engine_options(cfg, attention='full')
+
+
+def test_larger_split_doubles_cards_and_attempts_without_changing_training(tmp_path):
+    cfg = config(tmp_path)
+    larger = board_protocol('larger')
+    assert larger.identity() == dict(board_rows=4, board_cols=8, distinct_ranks=8, total_pairs=16, max_responses=192)
+    assert board_protocol('validation') == BoardProtocol()
+    specs = evaluation_specs(cfg, 'larger', 'larger-test')
+    assert [item['board_seed'] for item in specs] == list(range(3000000, 3000256))
+    options = driver.worker_options(cfg, specs, tmp_path, greedy=True, board=larger)
+    assert (options['rows'], options['cols'], options['num_cards'], options['max_responses']) == (4, 8, 8, 192)
+    assert options['transcript_cap'] == cfg.transcript_cap and options['window'] == cfg.window
+    assert driver.worker_options(cfg, [], tmp_path)['max_responses'] == 96
+    assert cfg.scientific_identity()['reward'] == 'pairs/8-attempts/96; resource exhaustion -1'
+    observed = dict(row(specs[0]), score=8, total_pairs=16, max_responses=192)
+    assert episode_metrics([observed])['matched_fraction'] == .5
+    with pytest.raises(ValueError, match='mix board sizes'):
+        episode_metrics([observed, row(specs[1])])
+    with pytest.raises(ValueError, match='frozen training board'):
+        BoardProtocol(cols=8)
+
+
+def test_larger_evaluation_records_effective_limits_and_complete_reserved_split(tmp_path):
+    cfg = config(tmp_path)
+    batches = []
+
+    class Runner:
+        async def collect(self, factory, options, **kwargs):
+            assert options['greedy'] is True and options['max_responses'] == 192
+            assert options['cols'] == 8 and options['num_cards'] == 8
+            batches.append(options['specs'])
+            return dict(episodes=[dict(row(spec), done=False, training_return=.375) for spec in options['specs']],
+                        seconds=.1, devices=[])
+
+        async def release(self):
+            pass
+
+    output = tmp_path / 'larger-evaluation'
+    result = asyncio.run(driver.evaluate_games(cfg, Runner(), split='larger', output=output, label='larger'))
+    assert result['episodes'] == 256 and result['total_pairs'] == 16 and result['max_responses'] == 192
+    assert result['matched_fraction'] == .5 and result['mean_return'] == .375
+    assert len(batches) == 2
+    protocol = json.loads((output / 'evaluation-protocol.json').read_text())
+    assert protocol['board_cols'] == 8 and protocol['max_responses'] == 192
+    assert protocol['config']['max_responses'] == 96 and protocol['transcript_cap'] == 262144
+    with pytest.raises(ValueError, match='Size generalization'):
+        asyncio.run(driver.evaluate_games(cfg, Runner(), split='larger', output=tmp_path / 'bad-larger',
+                                         label='larger-full', attention='full'))
 
 
 def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_path, monkeypatch):

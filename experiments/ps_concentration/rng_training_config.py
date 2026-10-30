@@ -62,6 +62,7 @@ def outcome_reward(record, max_responses=96, context_exhaustion_reward=None):
         if context_exhaustion_reward is None:
             raise ValueError('Context exhaustion must have an explicit recorded treatment before RL')
         return float(context_exhaustion_reward)
-    assert 0 <= record['score'] <= 8
+    total_pairs = record.get('total_pairs', 8)
+    assert total_pairs > 0 and 0 <= record['score'] <= total_pairs
     assert 0 < record['response_count'] <= max_responses
-    return record['score'] / 8 - record['response_count'] / max_responses
+    return record['score'] / total_pairs - record['response_count'] / max_responses

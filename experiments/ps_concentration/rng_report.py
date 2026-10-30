@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .overlap_config import episode_metrics
+from .overlap_config import BoardProtocol, board_protocol, episode_metrics
 from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions, summarize
 from .rng_training_config import outcome_reward
 
@@ -52,10 +52,13 @@ def load_condition(entry, *, allow_partial=False):
         raise ValueError(f'{entry["name"]}: {len(rows)} episodes, expected {expected}; partial reports require --allow-partial')
     if entry.get('greedy') is not True or any(row.get('greedy') is not True for row in rows):
         raise ValueError('The final comparison requires greedy evaluation, never sampled training trajectories')
+    board = board_protocol(entry['split']).identity()
     for row in rows:
+        if any(row.get(key, BoardProtocol().identity()[key]) != value for key, value in board.items()):
+            raise ValueError('An evaluation condition mixes board sizes or attempt limits')
         actual = outcome_reward(row, row.get('max_responses', 96), -1.)
         if abs(actual - row['training_return']) > 1e-10:
-            raise ValueError(f'Recorded efficiency reward differs from pairs/8-attempts/96: {row["episode_id"]}')
+            raise ValueError(f'Recorded efficiency reward differs from pairs/total_pairs-attempts/attempt_cap: {row["episode_id"]}')
         if row.get('attention') != entry['attention'] or row.get('window') != entry['window']:
             raise ValueError('An evaluation condition mixes attention settings')
     metrics = episode_metrics(rows)
@@ -64,12 +67,14 @@ def load_condition(entry, *, allow_partial=False):
     if entry.get('summary'):
         summary = json.loads(Path(entry['summary']).read_text())
         if (summary['episodes'] != len(rows) or summary['attention'] != entry['attention']
-                or summary['window'] != entry['window']):
+                or summary['window'] != entry['window']
+                or any(summary.get(key, BoardProtocol().identity()[key]) != value for key, value in board.items())):
             raise ValueError('System-metric summary belongs to a different evaluation condition')
         for name in ('peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
                      'completed_cohort_gpu_hours', 'unfinished_cohort_accounting'):
             metrics[name] = summary.get(name)
-    return dict(entry, **metrics, episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
+    return dict(entry, **metrics, **{key: value for key, value in board.items() if key not in metrics},
+                episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
 
 
 def analyze_condition(condition, tokenizer, *, examples=None):
@@ -117,6 +122,8 @@ def summarize_manifest(manifest, *, allow_partial=False):
             raise ValueError('Memory recovery compares two PS evaluations against a full-context reference')
         if trained['window'] != sliding['window']:
             raise ValueError('Treatment and sliding control must have the same window')
+        if any(condition['split'] != 'test' for condition in (trained, sliding, full)):
+            raise ValueError('The primary memory-recovery comparison uses the held-out standard board test split')
         paired_bootstrap(full['rows'], sliding['rows'])
         result = paired_bootstrap(trained['rows'], sliding['rows'])
         gap = full['mean_return'] - sliding['mean_return']
@@ -139,7 +146,8 @@ def summarize_manifest(manifest, *, allow_partial=False):
         summary = json.loads(Path(entry['summary']).read_text())
         interventions.append(dict(entry, result=summary))
     accounting = json.loads(Path(manifest['allocation_accounting']).read_text()) if manifest.get('allocation_accounting') else None
-    return dict(task='Native RNG-Bench textual Matching Pairs 4x4; efficiency reward pairs/8-attempts/96',
+    return dict(task='Native RNG-Bench textual Matching Pairs 4x4; efficiency reward pairs/8-attempts/96. '
+        'Size generalization: parameter-scaled 4x8, eight ranks with four copies each, reward pairs/16-attempts/192.',
         conditions=conditions, paired_comparisons=comparisons, training_seed_summaries=aggregate,
         interventions=interventions, allocation_accounting=accounting,
         accounting_scope=manifest.get('accounting_scope', 'Explicit allocations supplied in the accounting artifact'),
@@ -150,28 +158,31 @@ def summarize_manifest(manifest, *, allow_partial=False):
 def save_tables(result, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    fields = ['name', 'policy', 'training_seed', 'split', 'attention', 'window', 'episodes', 'complete_split',
+    fields = ['name', 'policy', 'training_seed', 'split', 'attention', 'window', 'board_rows', 'board_cols',
+        'distinct_ranks', 'total_pairs', 'max_responses', 'episodes', 'complete_split',
         'mean_return', 'mean_pairs', 'matched_fraction', 'completion_rate', 'mean_attempts_to_completion',
         'completed_only_mean_attempts', 'completed_only_denominator', 'mean_attempts', 'format_errors',
         'native_invalid_actions', 'resource_terminations', 'generated_tokens', 'raw_transcript_tokens',
         'mean_per_game_tokens_per_second', 'peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
         'completed_cohort_gpu_hours', 'unfinished_cohort_accounting']
-    with (output / 'main-comparison.csv').open('w', newline='') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(result['conditions'])
+    for filename, larger in [('main-comparison.csv', False), ('size-generalization.csv', True)]:
+        with (output / filename).open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(row for row in result['conditions'] if (row['split'] == 'larger') == larger)
     clean = dict(result, conditions=[{key: value for key, value in row.items() if key != 'rows'}
                                     for row in result['conditions']])
     (output / 'summary.json').write_text(json.dumps(clean, indent=2, allow_nan=False) + '\n')
     lines = ['# Matching Pairs memory experiment', '', result['task'], '',
-        '| Condition | Training seed | Attention | Boards | Pairs /8 | Efficiency return | Attempts | Context limited |',
+        '| Condition | Training seed | Attention | Boards | Pairs found / total | Efficiency return | Attempts | Context limited |',
         '|---|---:|---|---:|---:|---:|---:|---:|']
     for row in result['conditions']:
         attention = f'PS W={row["window"]}' if row['attention'] == 'ps' else 'Full'
         boards = str(row['episodes']) + (' (partial)' if not row['complete_split'] else '')
         lines.append(f'| {row["name"]} | {row["training_seed"]} | {attention} | {boards} | '
-            f'{row["mean_pairs"]:.4f} | {row["mean_return"]:.4f} | {row["mean_attempts"]:.2f} | {row["resource_terminations"]} |')
-    lines += ['', 'Resource-limited episodes retain observed pairs but receive the separately recorded -1 training reward. Their unobserved 96-attempt endpoints are not imputed as measured outcomes.', '',
+            f'{row["mean_pairs"]:.4f}/{row["total_pairs"]} | {row["mean_return"]:.4f} | {row["mean_attempts"]:.2f} | {row["resource_terminations"]} |')
+    lines += ['', 'Resource-limited episodes retain observed pairs but receive the separately recorded -1 training reward. Their unobserved attempt-cap endpoints are not imputed as measured outcomes.', '',
+              'Size generalization is a parameter-scaled RNG-Bench board, reported separately in size-generalization.csv. More copies per rank can make some decisions easier; this is not a claim of strictly greater difficulty.', '',
               result['interpretation'], '',
               'Paired intervals below use 10,000 resamples over board seeds within a fixed training seed. Training-seed standard deviations describe independent training runs; episode counts are not training replication.', '']
     for row in result['paired_comparisons']:

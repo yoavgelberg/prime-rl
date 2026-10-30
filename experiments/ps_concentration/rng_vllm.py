@@ -16,15 +16,19 @@ from prime_rl.inference.vllm.ps_interactive import PersistentChat, TranscriptLim
 
 from .rng_metrics import score_prefix
 from .rng_training_config import outcome_reward
+from .overlap_config import BoardProtocol
 
 
 class GameCohort:
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
-                 context_exhaustion_reward=-1., collect_cuda_metrics=True):
+                 context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
+        self.board = BoardProtocol(rows=rows, cols=cols, num_cards=num_cards, max_responses=max_responses)
+        if self.board.cols != 4 and (not greedy or attention != 'ps'):
+            raise ValueError('The larger board is reserved for greedy PS evaluation')
         self.context_exhaustion_reward = context_exhaustion_reward
         self.source, self.output = Path(source), Path(output)
         self.output.mkdir(parents=True, exist_ok=True)
@@ -89,7 +93,8 @@ Action: <coordinate, e.g. cD>
         try:
             censored, reason = False, None
             try:
-                result = self.run_one_game(model='local-vllm', rows=4, cols=4, num_cards=None,
+                result = self.run_one_game(model='local-vllm', rows=self.board.rows, cols=self.board.cols,
+                    num_cards=self.board.num_cards,
                     seed=spec['board_seed'], render='text', theme=None,
                     assets_dir=str(self.source / '1_matching_pairs_new/assets'), cell_size=64,
                     out_dir=folder / 'native', max_responses=self.max_responses, max_retries=2, cot_enabled=False)
@@ -99,8 +104,11 @@ Action: <coordinate, e.g. cD>
                 censored, reason = True, str(error)
                 chat.exhaust()
             native = json.loads((folder / 'native/game.json').read_text())
-            row = dict(score_prefix(native, self.max_responses), **spec, censored=censored,
-                resource_limit_reason=reason, greedy=self.greedy)
+            row = dict(score_prefix(native, self.max_responses), **spec)
+            row.update(censored=censored, resource_limit_reason=reason, greedy=self.greedy)
+            if native['config']['total_pairs'] != self.board.rows * self.board.cols // 2:
+                raise ValueError('The native board differs from its evaluation protocol')
+            row.update(self.board.identity())
             if not censored and row['score'] != result['score']:
                 raise ValueError('Offline native score differs from the environment result')
             row['training_return'] = outcome_reward(row, self.max_responses, self.context_exhaustion_reward)

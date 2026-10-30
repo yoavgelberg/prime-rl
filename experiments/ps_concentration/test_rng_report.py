@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from .rng_report import load_condition, paired_bootstrap, seed_summary, summarize_manifest
+from .rng_report import load_condition, paired_bootstrap, save_tables, seed_summary, summarize_manifest
 
 
 def episodes(seed=11, delta=0.):
@@ -91,3 +91,25 @@ def test_base_control_is_not_mislabeled_full_rl_and_small_gap_has_no_recovery(tm
     assert comparison['mean_difference'] == .25
     assert comparison['recovery'] is None
     assert comparison['full_rl_control_skipped']
+
+
+def test_size_generalization_uses_sixteen_pairs_and_separate_table(tmp_path):
+    standard = condition(tmp_path, episodes())
+    rows = [dict(row, board_seed=3000000 + index, board_rows=4, board_cols=8, distinct_ranks=8,
+                 total_pairs=16, max_responses=192, training_return=.25, done=False)
+            for index, row in enumerate(episodes())]
+    larger = condition(tmp_path, rows, name='larger', split='larger')
+    result = summarize_manifest(dict(conditions=[standard, larger]))
+    assert result['conditions'][1]['matched_fraction'] == .5
+    assert result['conditions'][1]['mean_attempts_to_completion'] == 192
+    save_tables(result, tmp_path / 'report')
+    import csv
+    with (tmp_path / 'report/size-generalization.csv').open() as handle:
+        values = list(csv.DictReader(handle))
+    assert len(values) == 1 and values[0]['total_pairs'] == '16' and values[0]['name'] == 'larger'
+    assert '/16' in (tmp_path / 'report/README.md').read_text()
+    with (tmp_path / 'report/main-comparison.csv').open() as handle:
+        assert [value['name'] for value in csv.DictReader(handle)] == ['trained']
+    rows[0]['total_pairs'] = 8
+    with pytest.raises(ValueError, match='board sizes'):
+        load_condition(condition(tmp_path, rows, name='wrong', split='larger'))

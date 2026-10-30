@@ -89,7 +89,27 @@ def training_specs(config, update, boards):
         episode_id=f'u{update:04d}-g{group}-r{rollout}') for group in range(8) for rollout in range(8)]
 
 
-SPLITS = dict(screening=(1000000, 64), validation=(1100000, 128), test=(2000000, 512),
+@dataclass(frozen=True)
+class BoardProtocol:
+    rows: int = 4
+    cols: int = 4
+    num_cards: int = 8
+    max_responses: int = 96
+
+    def __post_init__(self):
+        if (self.rows, self.cols, self.num_cards, self.max_responses) not in ((4, 4, 8, 96), (4, 8, 8, 192)):
+            raise ValueError('Use the frozen training board or the parameter-scaled larger-board evaluation')
+
+    def identity(self):
+        return dict(board_rows=self.rows, board_cols=self.cols, distinct_ranks=self.num_cards,
+                    total_pairs=self.rows * self.cols // 2, max_responses=self.max_responses)
+
+
+def board_protocol(split):
+    return BoardProtocol(cols=8, max_responses=192) if split == 'larger' else BoardProtocol()
+
+
+SPLITS = dict(screening=(1000000, 64), validation=(1100000, 128), test=(2000000, 512), larger=(3000000, 256),
               intervention=(4000000, 512))
 
 
@@ -114,14 +134,20 @@ def episode_metrics(rows):
     count = len(rows)
     if not count:
         raise ValueError('A metric report requires observed episodes')
+    pair_counts = {row.get('total_pairs', 8) for row in rows}
+    attempt_caps = {row.get('max_responses', 96) for row in rows}
+    if len(pair_counts) != 1 or len(attempt_caps) != 1:
+        raise ValueError('A metric report cannot mix board sizes or attempt limits')
+    total_pairs, max_responses = pair_counts.pop(), attempt_caps.pop()
     attempts = sum(row['response_count'] for row in rows)
     tokens = sum(row['generated_tokens'] for row in rows)
     entropy_tokens = sum(row.get('entropy_tokens', 0) for row in rows)
     complete = [row for row in rows if row['done']]
-    return dict(episodes=count, mean_return=float(np.mean([row['training_return'] for row in rows])),
+    return dict(episodes=count, total_pairs=total_pairs, max_responses=max_responses,
+        mean_return=float(np.mean([row['training_return'] for row in rows])),
         reward_std=float(np.std([row['training_return'] for row in rows])),
         mean_pairs=float(np.mean([row['score'] for row in rows])),
-        matched_fraction=float(np.mean([row['score'] / 8 for row in rows])),
+        matched_fraction=float(np.mean([row['score'] / total_pairs for row in rows])),
         completion_rate=len(complete) / count, mean_attempts=attempts / count,
         completed_only_mean_attempts=float(np.mean([row['response_count'] for row in complete])) if complete else None,
         completed_only_denominator=len(complete),

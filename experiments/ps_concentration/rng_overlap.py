@@ -15,7 +15,7 @@ from prime_rl.orchestrator.ps_games import GameRolloutRunner, worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 
 from .control import handoff_requested
-from .overlap_config import RunConfig, cohorts, episode_metrics, evaluation_specs, permutation, protocol_lock, training_specs
+from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, permutation, protocol_lock, training_specs
 
 
 FACTORY = 'experiments.ps_concentration.rng_vllm.GameCohort'
@@ -74,10 +74,12 @@ def make_engine(config, *, attention='ps', checkpoint=None, evaluation=False):
     return AsyncLLM.from_engine_args(AsyncEngineArgs(**options))
 
 
-def worker_options(config, specs, output, *, attention='ps', greedy=False):
+def worker_options(config, specs, output, *, attention='ps', greedy=False, board=None):
+    board = board or BoardProtocol()
     return dict(model=config.model, source=config.source, output=str(output), specs=specs,
         attention=attention, window=config.window, transcript_cap=config.transcript_cap,
-        max_responses=config.max_responses, temperature=config.temperature, greedy=greedy,
+        max_responses=board.max_responses, rows=board.rows, cols=board.cols, num_cards=board.num_cards,
+        temperature=config.temperature, greedy=greedy,
         context_exhaustion_reward=-1.)
 
 
@@ -98,8 +100,14 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
                          policy_identity=None, count=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
+    board = board_protocol(split)
+    if split == 'larger' and attention != 'ps':
+        raise ValueError('Size generalization uses the selected PS window and greedy decoding')
     identity = dict(policy_version=policy_version, policy_identity=policy_identity or config.revision,
-                    attention=attention, window=config.window, greedy=True)
+                    attention=attention, window=config.window, greedy=True, **board.identity())
+    write_json(output / 'evaluation-protocol.json', dict(config=config.model_dump(), **board.identity(),
+        transcript_cap=config.transcript_cap, prompt='Identical native system prompt; board size appears in observations',
+        scope='Parameter-scaled RNG-Bench Matching Pairs' if split == 'larger' else 'Native RNG-Bench Matching Pairs 4x4'))
     specs = [dict(spec, **identity) for spec in evaluation_specs(config, split, label, count=count)]
     write_json(output / 'plan.json', specs)
     rows, pending = [], []
@@ -119,7 +127,7 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
         write_json(accounting, dict(status='started', wall_start=started_wall, gpus=config.gpus,
             episode_ids=[spec['episode_id'] for spec in batch], job=os.environ.get('SLURM_JOB_ID')))
         report = await runner.collect(FACTORY, worker_options(config, batch, output,
-            attention=attention, greedy=True), policy_version=policy_version)
+            attention=attention, greedy=True, board=board), policy_version=policy_version)
         write_json(accounting, dict(status='complete', wall_start=started_wall, wall_end=time.time(),
             gpus=config.gpus, job=os.environ.get('SLURM_JOB_ID'), report=report))
         rows.extend(report['episodes'])
@@ -366,7 +374,7 @@ def main():
     parser.add_argument('mode', choices=['train', 'evaluate'])
     parser.add_argument('--config', required=True)
     parser.add_argument('--attention', choices=['ps', 'full'], default='ps')
-    parser.add_argument('--split', choices=['screening', 'validation', 'test', 'intervention'], default='screening')
+    parser.add_argument('--split', choices=['screening', 'validation', 'test', 'larger', 'intervention'], default='screening')
     parser.add_argument('--checkpoint')
     parser.add_argument('--competence')
     parser.add_argument('--window', type=int, help='Evaluation window sweep; training remains W=1024')
