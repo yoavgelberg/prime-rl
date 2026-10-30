@@ -7,10 +7,15 @@ allocation_root=${1:?Supply the existing allocation lease directory}
 base=/hai/scratch/gelberg/ps/concentration
 campaign="$base/rng-overlap-grpo-a1"
 mkdir -p "$campaign"
-exec 8>"$campaign/training.lock"
-if ! flock -n 8; then
-    printf 'Another allocation owns this pilot; no duplicate work was started.\n'
-    exit 0
+if [[ "${PS_OVERLAP_LOCK_HELD:-0}" != 1 ]]; then
+    exec 8>"$campaign/training.lock"
+    if ! flock -n 8; then
+        printf 'Another allocation owns this pilot; no duplicate work was started.\n'
+        exit 0
+    fi
+    export PS_OVERLAP_LOCK_HELD=1
+else
+    [[ -e /proc/$$/fd/8 ]]
 fi
 [[ "$SLURM_JOB_PARTITION" == yejin ]]
 export ALLOCATION_ROOT="$allocation_root"
@@ -27,8 +32,6 @@ if [[ -z "${PS_DEPENDENCY_ROOT:-}" ]]; then
 fi
 if [[ -z "${PS_DEPENDENCY_ROOT:-}" ]]; then
     export PS_DEPENDENCY_ARCHIVE=/hai/scratch/gelberg/ps/runs/overlap-local-dependencies-cpu-a1/attempt-0
-    flock -u 8
-    exec 8>&-
     exec bash /hai/scratch/gelberg/ps/sources/overlap-query-fields-b200-a3/harness/with_local_dependencies.sh bash "$0" "$@"
 fi
 export PS_PYTHON_BIN="$PS_DEPENDENCY_ROOT/env/bin/python"
