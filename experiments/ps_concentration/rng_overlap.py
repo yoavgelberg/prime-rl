@@ -245,7 +245,7 @@ def pilot_gate(full, initial, trained):
         full_rl_skipped=True, interpretation='Numerical gate report; expansion remains an agent review of the completed pilot')
 
 
-async def train(config, engine, monitor, competence):
+async def train(config, engine, monitor, competence=None, *, defer_evaluation=False):
     if config.window != 1024:
         raise ValueError('The training window is frozen at 1024; window sweeps are evaluation only')
     output, runner = Path(config.output), GameRolloutRunner(engine)
@@ -255,6 +255,7 @@ async def train(config, engine, monitor, competence):
     if len(initialized) != config.gpus or any(row['world_size'] != config.gpus for row in initialized):
         raise ValueError('The initialized engine differs from the reserved DP layout')
     identity = config.scientific_identity()
+    identity['evaluation_deferred'] = defer_evaluation
     version, best_return, best_update, cumulative_tokens = 0, None, None, 0
     latest = output / 'checkpoints/latest.pt'
     if latest.exists():
@@ -306,7 +307,7 @@ async def train(config, engine, monitor, competence):
             checkpoint=str(output / 'checkpoints' / f'policy-{best_update:04d}'),
             selection='Highest complete 128-board PS validation native efficiency return, earlier checkpoint on ties'))
 
-    if version % config.validation_interval == 0:
+    if not defer_evaluation and version % config.validation_interval == 0:
         await validate()
     while version < config.updates:
         previous_metrics = output / 'update-metrics' / f'update-{version:04d}.json'
@@ -346,15 +347,16 @@ async def train(config, engine, monitor, competence):
         await save()
         append_json(output / 'updates.jsonl', metrics)
         log_metrics(monitor, 'train', metrics, version)
-        if version % config.validation_interval == 0 or version == config.updates:
+        if not defer_evaluation and (version % config.validation_interval == 0 or version == config.updates):
             await validate()
     gate = None
-    if version >= 32:
+    if version >= 32 and not defer_evaluation:
         initial = json.loads((output / 'validation/update-0000/summary.json').read_text())
         trained = json.loads((output / 'validation' / f'update-{version:04d}/summary.json').read_text())
         gate = pilot_gate(competence, initial, trained)
     write_json(output / 'pilot-complete.json', dict(updates=version, episodes=version * 64,
-        best_update=best_update, best_return=best_return, automatic_matrix_expansion=False, pilot_gate=gate))
+        best_update=best_update, best_return=best_return, automatic_matrix_expansion=False, pilot_gate=gate,
+        evaluation_deferred=defer_evaluation))
 
 
 def lock_run(config):
@@ -377,6 +379,7 @@ def main():
     parser.add_argument('--split', choices=['screening', 'validation', 'test', 'larger', 'intervention'], default='screening')
     parser.add_argument('--checkpoint')
     parser.add_argument('--competence')
+    parser.add_argument('--defer-evaluation', action='store_true', help='Start training without evaluation; evaluate separately when time remains')
     parser.add_argument('--window', type=int, help='Evaluation window sweep; training remains W=1024')
     parser.add_argument('--count', type=int, help='Evaluate the first N fixed split boards, e.g. 128 for window sweeps')
     args = parser.parse_args()
@@ -385,9 +388,12 @@ def main():
         config = replace(config, window=args.window)
     if args.mode == 'train' and args.count is not None:
         parser.error('--count is evaluation-only; training uses the complete fixed global batch')
+    if args.defer_evaluation and args.mode != 'train':
+        parser.error('--defer-evaluation applies to training only')
     lock_run(config)
+    write_json(Path(config.output) / 'execution-options.json', dict(evaluation_deferred=args.defer_evaluation))
     competence = None
-    if args.mode == 'train':
+    if args.mode == 'train' and not args.defer_evaluation:
         if not args.competence:
             parser.error('Training requires a completed same-engine full-context competence screening')
         competence = json.loads(Path(args.competence).read_text())
@@ -399,7 +405,7 @@ def main():
         if competence['matched_fraction'] < .8:
             raise ValueError(f'HOLD: full-context matched fraction {competence["matched_fraction"]:.6f} < .8')
     monitor = setup_wandb(config) if args.mode == 'train' else None
-    if monitor is not None:
+    if monitor is not None and competence is not None:
         log_metrics(monitor, 'reference_full', competence, 0)
     engine = make_engine(config, attention=args.attention, checkpoint=args.checkpoint,
                          evaluation=args.mode == 'evaluate')
@@ -407,7 +413,7 @@ def main():
         if args.mode == 'train':
             if args.attention != 'ps' or args.checkpoint:
                 raise ValueError('The accepted pilot trains PS only, restoring its exact optimizer snapshot automatically')
-            asyncio.run(train(config, engine, monitor, competence))
+            asyncio.run(train(config, engine, monitor, competence, defer_evaluation=args.defer_evaluation))
         else:
             identity = config.revision
             version = 0

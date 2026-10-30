@@ -111,7 +111,8 @@ def test_larger_evaluation_records_effective_limits_and_complete_reserved_split(
                                          label='larger-full', attention='full'))
 
 
-def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_path, monkeypatch):
+@pytest.mark.parametrize('defer_evaluation', [False, True])
+def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_path, monkeypatch, defer_evaluation):
     cfg = config(tmp_path, updates=1)
     output = Path(cfg.output)
     output.mkdir()
@@ -156,18 +157,24 @@ def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_
     monkeypatch.setattr(driver, 'worker_rpc', rpc)
     monkeypatch.setattr(driver, 'handoff_requested', lambda: False)
     monitor = type('Monitor', (), dict(log=lambda self, value: logged.append(value)))()
-    asyncio.run(driver.train(cfg, object(), monitor, dict(matched_fraction=.9, mean_return=.75, episodes=128, split='validation')))
+    competence = None if defer_evaluation else dict(matched_fraction=.9, mean_return=.75, episodes=128, split='validation')
+    asyncio.run(driver.train(cfg, object(), monitor, competence, defer_evaluation=defer_evaluation))
     step = next(index for index, call in enumerate(calls) if call[0] == 'ps_train_step')
     save = next(index for index in range(step + 1, len(calls)) if calls[index][0] == 'ps_train_save')
-    val = next(index for index in range(step + 1, len(calls)) if calls[index][:2] == ('collect', False))
-    assert step < save < val
+    assert step < save
+    if defer_evaluation:
+        assert not any(call[:2] == ('collect', False) for call in calls)
+    else:
+        val = next(index for index in range(step + 1, len(calls)) if calls[index][:2] == ('collect', False))
+        assert save < val
     assert len({spec['episode_id'] for spec in admitted}) == 64
     assert sum(call[0] == 'ps_train_step' for call in calls) == 1
     assert sum(call[0] == 'ps_train_reduce' for call in calls) == 2
     final = json.loads((output / 'pilot-complete.json').read_text())
-    assert final['episodes'] == 64 and final['best_update'] == 0
-    assert len(logged) == 3
-    metric = logged[1]
+    assert final['episodes'] == 64 and final['best_update'] == (None if defer_evaluation else 0)
+    assert final['evaluation_deferred'] == defer_evaluation
+    assert len(logged) == (1 if defer_evaluation else 3)
+    metric = logged[0 if defer_evaluation else 1]
     assert metric['train/generated_tokens'] == 6400
     assert metric['train/normalized_score_surrogate_loss'] == pytest.approx(.08)
     assert metric['train/advantage_std'] == pytest.approx(1.)

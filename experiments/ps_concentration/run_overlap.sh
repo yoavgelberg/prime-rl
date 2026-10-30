@@ -67,12 +67,6 @@ write_json(root / f'launch-{os.environ["SLURM_JOB_ID"]}.json', dict(
     partition=os.environ['SLURM_JOB_PARTITION'], no_extra_gpu_smoke=True,
     maximum_allocation_gpu_hours=int(os.environ['PS_RUN_GPUS']) * 24))
 PY
-full_config="$campaign/full-reference-config-$SLURM_JOB_ID.json"
 ps_config="$campaign/ps-seed11-config-$SLURM_JOB_ID.json"
-competence="$campaign/full-reference/evaluation/validation/summary.json"
-if [[ ! -f "$competence" ]]; then
-    "$PS_PYTHON_BIN" -u -m experiments.ps_concentration.rng_overlap evaluate --config "$full_config" \
-        --attention full --split validation > "$allocation_root/full-reference-$SLURM_JOB_ID.log" 2>&1
-fi
 "$PS_PYTHON_BIN" -u -m experiments.ps_concentration.rng_overlap train --config "$ps_config" \
-    --attention ps --competence "$competence" > "$allocation_root/ps-grpo-$SLURM_JOB_ID.log" 2>&1
+    --attention ps --defer-evaluation > "$allocation_root/ps-grpo-$SLURM_JOB_ID.log" 2>&1
