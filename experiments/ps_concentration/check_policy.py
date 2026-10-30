@@ -36,7 +36,7 @@ def toy_reference():
 
 
 @torch.autocast('cuda', dtype=torch.bfloat16)
-def teacher_logps(base, record, backend='fa4', *, grad=False, temperature=1.):
+def teacher_logps(base, record, backend='fa4', *, grad=False, temperature=1., native_vllm=False):
     device = base.device
     ids = torch.tensor(record['tokens'], device=device)
     padding = (-(len(ids)-1)) % 1024
@@ -44,7 +44,11 @@ def teacher_logps(base, record, backend='fa4', *, grad=False, temperature=1.):
         ids = torch.nn.functional.pad(ids, (0, padding), value=int(ids[-1]))
     indices = torch.arange(len(ids)-1, device=device)
     window = record['window'] if record['attention'] == 'ps' else len(ids) + 1
-    adapter = ConcentrationQwen(base, window, backend=backend, checkpoint_layers=grad)
+    if native_vllm:
+        from .native_teacher import NativeTeacher
+        adapter = NativeTeacher(base, window, backend=backend, checkpoint_layers=grad)
+    else:
+        adapter = ConcentrationQwen(base, window, backend=backend, checkpoint_layers=grad)
     hidden = adapter.segment(ids[:-1], indices, indices, record['prefix_length'])
     selected = torch.tensor(record['loss_mask'][1:] + [False]*padding, device=device)
     labels = ids[1:][selected]

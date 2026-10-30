@@ -37,13 +37,13 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
                 device=policy.device)
             if initial_policy:
                 with torch.no_grad():
-                    logps = teacher_logps(policy.base, record, temperature=temperature)
+                    logps = teacher_logps(policy.base, record, temperature=temperature, native_vllm=True)
                 local_kl = 0.
             else:
                 with torch.no_grad():
-                    ref = teacher_logps(reference, record, temperature=temperature)
+                    ref = teacher_logps(reference, record, temperature=temperature, native_vllm=True)
                 with activation_offload(policy.parameters()):
-                    logps = teacher_logps(policy.base, record, grad=True, temperature=temperature)
+                    logps = teacher_logps(policy.base, record, grad=True, temperature=temperature, native_vllm=True)
                     values = sampled_kl(logps, ref)
                     loss = coefficient * values.sum() / (outcome_config.denominator * outcome_config.global_batch_size)
                 if not bool(torch.isfinite(loss)):
@@ -66,7 +66,8 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
     audit = dict(mean_abs=float(differences.mean()), p99=float(np.quantile(differences, .99)),
         max_abs=float(differences.max()), mean_limit=.01, p99_limit=.05,
         generated_tokens=tokens, direct_loss_scope='sampled assistant only; forced tokens excluded',
-        initial_policy=initial_policy, exploratory_target_miss_allowed=allow_numerical_target_miss)
+        initial_policy=initial_policy, exploratory_target_miss_allowed=allow_numerical_target_miss,
+        arithmetic='Native effective BF16 projections/embeddings/norm weights, FP32 pre-round fused residual sums, BF16 RoPE cache')
     audit['status'] = 'GO' if audit['mean_abs'] <= .01 and audit['p99'] <= .05 else 'HOLD'
     (output / 'rollout-teacher-parity.json').write_text(json.dumps(audit, indent=2) + '\n')
     if not accept_parity(audit, allow_numerical_target_miss):

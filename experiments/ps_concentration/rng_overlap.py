@@ -142,6 +142,9 @@ def recover_uncommitted(output, version):
         if int(path.name.removeprefix('policy-').split('.')[0]) > version:
             recovery.mkdir(parents=True, exist_ok=True)
             path.rename(recovery / path.name)
+    accepted = [json.loads(path.read_text())['metrics']
+                for path in sorted((output / 'update-metrics').glob('update-*.json'))]
+    (output / 'updates.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in accepted))
 
 
 def aggregate_update(reports, materialized, kl_reports, steps, *, update, seconds, gpus):
@@ -265,7 +268,10 @@ async def train(config, engine, monitor, competence):
     if version % config.validation_interval == 0:
         await validate()
     while version < config.updates:
-        if handoff_requested():
+        previous_metrics = output / 'update-metrics' / f'update-{version:04d}.json'
+        previous_seconds = json.loads(previous_metrics.read_text())['metrics']['seconds'] if previous_metrics.exists() else 0.
+        remaining = float(os.environ.get('PS_CONCENTRATION_END_EPOCH', 'inf')) - time.time()
+        if handoff_requested() or remaining < max(1800, previous_seconds * 1.3 + 300):
             await save()
             write_json(output / 'handoff-ready.json', dict(policy_version=version, job=os.environ.get('SLURM_JOB_ID')))
             return
@@ -293,10 +299,10 @@ async def train(config, engine, monitor, competence):
         cumulative_tokens += metrics['generated_tokens']
         metrics['cumulative_generated_tokens'] = cumulative_tokens
         metrics['current_layout_compute_gpu_hours'] = config.gpus * metrics['seconds'] / 3600
-        await save()
         write_json(output / 'update-metrics' / f'update-{update:04d}.json',
             dict(metrics=metrics, rollouts=reports, reductions=reductions, materialized=materialized,
                  reference_kl=kl_reports, optimizer=steps))
+        await save()
         append_json(output / 'updates.jsonl', metrics)
         log_metrics(monitor, 'train', metrics, version)
         if version % config.validation_interval == 0 or version == config.updates:
