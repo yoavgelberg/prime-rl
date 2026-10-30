@@ -53,15 +53,20 @@ class Engine:
             self.abort_events[rank].set()
 
 
-def test_driver_retains_all_dp_replies_and_distinguishes_native_end_from_length_end():
+def test_driver_retains_all_dp_replies_and_distinguishes_native_end_from_length_end(tmp_path):
     async def run():
         engine = Engine()
         factory = lambda request, **kwargs: SimpleNamespace(**kwargs, seed=request['generation_seed'])
         runner = GameRolloutRunner(engine, poll_seconds=.001, params_factory=factory)
-        result = await asyncio.wait_for(runner.collect('native.Factory', dict(temperature=.6)), 3)
+        result = await asyncio.wait_for(runner.collect('native.Factory', dict(temperature=.6, output=str(tmp_path))), 3)
         assert [row['episode_id'] for row in result['episodes']] == ['game0', 'game1']
         assert result['engine_output_tokens'] == 2
         assert engine.exhausted == {1}
+        import json
+        snapshot = json.loads((tmp_path / 'live-cohort.json').read_text())
+        assert snapshot['completed'] == snapshot['cohort_trajectories'] == 2
+        assert snapshot['engine_output_tokens'] == result['engine_output_tokens']
+        assert all(row['done'] for row in snapshot['requests'].values())
         assert engine.aborted == {0, 1}
         assert engine.params[0].seed == 11 and engine.params[1].seed == 12
         for rank in (0, 1):

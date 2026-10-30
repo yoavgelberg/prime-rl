@@ -1,6 +1,8 @@
 """Persistent-game rollout cohorts on the pinned native vLLM DP engine."""
 
 import asyncio
+import json
+from pathlib import Path
 import time
 
 
@@ -57,6 +59,8 @@ class GameRolloutRunner:
 
         tasks = {request['request_id']: asyncio.create_task(drive(request)) for request in requests}
         termination_signaled = set()
+        progress_path = Path(options['output']) / 'live-cohort.json' if options.get('output') else None
+        progress_written = -float('inf')
         try:
             while True:
                 for task in tasks.values():
@@ -73,6 +77,15 @@ class GameRolloutRunner:
                                      kwargs=dict(request_ids=sorted(exhausted)), timeout=60.)
                     termination_signaled.update(exhausted)
                 finished = {identity for identity, status in combined.items() if status['done']}
+                now = time.perf_counter()
+                if progress_path is not None and (now - progress_written >= 10. or len(finished) == len(tasks)):
+                    snapshot = dict(wall_time=time.time(), seconds=now - started, policy_version=policy_version,
+                        backward=backward, cohort_trajectories=len(tasks), completed=len(finished),
+                        engine_output_tokens=sum(engine_tokens.values()), requests=combined)
+                    temporary = progress_path.with_suffix('.json.tmp')
+                    temporary.write_text(json.dumps(snapshot, allow_nan=False) + '\n')
+                    temporary.replace(progress_path)
+                    progress_written = now
                 to_abort = finished - aborted
                 if to_abort:
                     await self.engine.abort(sorted(to_abort))
