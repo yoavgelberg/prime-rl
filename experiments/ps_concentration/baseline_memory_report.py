@@ -117,9 +117,9 @@ def save_report(result, output):
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for attention in ('full', 'ps'):
         ax.plot(BINS, [result['conditions'][attention]['known_match'][name]['utilization'] for name in BINS],
-                marker='o', label=attention)
+                marker='o', label='Full context' if attention == 'full' else 'PS, W=1024')
     ax.set(ylim=(0, 1.05), xlabel='Age of direct environment reveal', ylabel='Known-match utilization',
-           title='Untrained sampled baseline:64pairedboards')
+           title='Untrained sampled baseline: 64 paired boards')
     ax.legend(frameon=False)
     fig.text(.5, .01, 'Policies visit different states. Censored games contribute completed responses only.', ha='center', fontsize=8)
     fig.tight_layout(rect=(0, .04, 1, 1)); fig.savefig(output / 'known-match-utilization.png', dpi=180); plt.close(fig)
