@@ -1,8 +1,50 @@
+import csv
 import json
 
 import pytest
 
-from .rng_report import analyze_condition, load_condition, paired_bootstrap, save_tables, seed_summary, summarize_manifest, window_series
+from .rng_report import analyze_condition, load_condition, paired_bootstrap, plots, save_tables, seed_summary, summarize_manifest, training_curve_rows, window_series
+
+
+def test_training_curves_keep_sampled_returns_separate_and_exclude_uncommitted_updates(tmp_path):
+    root = tmp_path / 'run'
+    (root / 'update-metrics').mkdir(parents=True)
+    for update in (1, 2):
+        (root / 'update-metrics' / f'update-{update:04d}.json').write_text(json.dumps(dict(metrics=dict(
+            update=update, episodes=64, training_episodes=update * 64, mean_return=-.5 + update / 10))))
+    for update in (0, 2):
+        path = root / 'validation' / f'update-{update:04d}' / 'summary.json'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(dict(policy_version=update, episodes=128, greedy=True, mean_return=.2)))
+    run = dict(run_dir=str(root), training_seed=11)
+    state = root / 'state.json'
+    state.write_text(json.dumps(dict(policy_version=1)))
+    rows = training_curve_rows([run])
+    assert rows == [dict(training_seed=11, kind='sampled_training', update=1, training_episodes=64, mean_return=-.4),
+                    dict(training_seed=11, kind='greedy_validation', update=0, training_episodes=0, mean_return=.2)]
+    report = tmp_path / 'report'
+    report.mkdir()
+    plots(dict(conditions=[]), dict(training_runs=[run]), report)
+    assert (report / 'return-vs-training-episodes.png').stat().st_size > 1000
+    with (report / 'training-return-curve.csv').open() as handle:
+        saved = list(csv.DictReader(handle))
+    assert [row['kind'] for row in saved] == ['sampled_training', 'greedy_validation']
+    assert [int(row['training_episodes']) for row in saved] == [64, 0]
+    state.unlink()
+    assert training_curve_rows([run]) == rows[1:]
+
+
+def test_return_curves_reject_partial_batches_and_nonfinite_measurements(tmp_path):
+    (tmp_path / 'update-metrics').mkdir()
+    (tmp_path / 'state.json').write_text(json.dumps(dict(policy_version=1)))
+    path = tmp_path / 'update-metrics/update-0001.json'
+    base = dict(update=1, episodes=64, training_episodes=64, mean_return=0.)
+    for changed, message in [(dict(episodes=63), '64-trajectory'),
+                             (dict(training_episodes=63), '64-trajectory'),
+                             (dict(mean_return=float('nan')), 'nonfinite')]:
+        path.write_text(json.dumps(dict(metrics=base | changed)))
+        with pytest.raises(ValueError, match=message):
+            training_curve_rows([dict(run_dir=str(tmp_path), training_seed=11)])
 
 
 def episodes(seed=11, delta=0.):

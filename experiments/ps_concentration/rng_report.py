@@ -275,26 +275,59 @@ def window_series(conditions):
     return series
 
 
+def training_curve_rows(runs):
+    rows = []
+    for run in runs:
+        root = Path(run['run_dir'])
+        state = root / 'state.json'
+        committed = json.loads(state.read_text())['policy_version'] if state.exists() else 0
+        for path in sorted((root / 'update-metrics').glob('update-*.json')):
+            point = json.loads(path.read_text())['metrics']
+            update = point['update']
+            if update > committed:
+                continue
+            if update < 1 or point['episodes'] != 64 or point['training_episodes'] != update * 64:
+                raise ValueError('A training curve requires complete 64-trajectory optimizer updates')
+            rows.append(dict(training_seed=run['training_seed'], kind='sampled_training', update=update,
+                training_episodes=point['training_episodes'], mean_return=point['mean_return']))
+        for path in sorted((root / 'validation').glob('update-*/summary.json')):
+            point = json.loads(path.read_text())
+            update = point['policy_version']
+            if update > committed:
+                continue
+            if point['episodes'] != 128 or point.get('greedy') is not True:
+                raise ValueError('A validation curve requires complete greedy 128-board evaluations')
+            rows.append(dict(training_seed=run['training_seed'], kind='greedy_validation', update=update,
+                training_episodes=update * 64, mean_return=point['mean_return']))
+    if any(not np.isfinite(row['mean_return']) for row in rows):
+        raise ValueError('A return curve cannot contain nonfinite measurements')
+    return rows
+
+
 def plots(result, manifest, output):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
     output = Path(output)
-    if manifest.get('training_runs'):
-        fig, ax = plt.subplots(figsize=(7, 4.5))
-        plotted = False
-        for run in manifest['training_runs']:
-            root = Path(run['run_dir'])
-            points = [json.loads(path.read_text()) for path in sorted((root / 'validation').glob('update-*/summary.json'))]
-            if points:
-                ax.plot([point['policy_version'] * 64 for point in points], [point['mean_return'] for point in points],
-                    marker='o', label=f'PS GRPO seed {run["training_seed"]}')
-                plotted = True
-        if plotted:
-            ax.set(xlabel='Training episodes', ylabel='Greedy validation efficiency return')
+    curve = training_curve_rows(manifest.get('training_runs', []))
+    kinds = [kind for kind in ('sampled_training', 'greedy_validation') if any(row['kind'] == kind for row in curve)]
+    if kinds:
+        with (output / 'training-return-curve.csv').open('w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(curve[0]))
+            writer.writeheader()
+            writer.writerows(curve)
+        fig, axes = plt.subplots(1, len(kinds), figsize=(7 * len(kinds), 4.5), squeeze=False)
+        for ax, kind in zip(axes[0], kinds, strict=True):
+            for seed in sorted({row['training_seed'] for row in curve if row['kind'] == kind}):
+                points = sorted((row for row in curve if row['kind'] == kind and row['training_seed'] == seed),
+                    key=lambda row: row['update'])
+                ax.plot([point['training_episodes'] for point in points], [point['mean_return'] for point in points],
+                    marker='o', label=f'PS GRPO seed {seed}')
+            label = 'Sampled training efficiency return' if kind == 'sampled_training' else 'Greedy validation efficiency return'
+            ax.set(xlabel='Training episodes', ylabel=label)
             ax.legend(frameon=False)
-            fig.tight_layout(); fig.savefig(output / 'return-vs-training-episodes.png', dpi=180)
+        fig.tight_layout(); fig.savefig(output / 'return-vs-training-episodes.png', dpi=180)
         plt.close(fig)
     series = window_series(result['conditions'])
     if series:
