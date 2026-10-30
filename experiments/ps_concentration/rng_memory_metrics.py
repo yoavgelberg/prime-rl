@@ -6,6 +6,9 @@ from pathlib import Path
 import re
 
 
+ANALYSIS_VERSION = 'native-known-match-v2-first-coordinate'
+
+
 def decoded_offsets(tokenizer, tokens):
     text = tokenizer.decode(tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
     encoded = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
@@ -63,7 +66,7 @@ def action_query(tokenizer, tokens, absolute_start, native_coord):
         if coordinate:
             if native_coord is not None:
                 assert coordinate[1] + coordinate[2] == native_coord
-            character = final_start + marker.end() + coordinate.end(2) - 1
+            character = final_start + marker.end() + coordinate.start(1)
             return absolute_start + sampled_token_at(tokenizer, tokens, character, text) - 1
     assert native_coord is None
     return absolute_start + len(tokens) - 2
@@ -98,6 +101,8 @@ def known_match_decisions(record, game, tokenizer):
                 age_bin = '<=W' if age <= window else '(W,2W]' if age <= 2 * window else '>2W'
                 decisions.append(dict(response_index=number, turn_start=turn['start'], query_position=query,
                     first_position=first_position, target_rank=target, partners=partners, direct_reveal_age=age,
+                    known_unmatched={position: dict(rank=rank, last_direct_reveal=reveal)
+                        for position, (rank, reveal) in known.items() if position != first_position and position not in matched},
                     age_bin=age_bin, chosen=chosen,
                     correct=bool(native['env_result']['applied'] and chosen in partners),
                     retained_suffix_start=max(record['prefix_length'], query - window + 1)))
@@ -142,6 +147,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
     decisions = known_match_decisions(record, game, tokenizer)
     result = dict(known_match=summarize(decisions), decisions=decisions,
+        analysis_version=ANALYSIS_VERSION,
         age_definition='Original action-query token position minus latest direct environment rank-token position; notes never reset age',
         scope='Completed native responses only; unfinished context-censored responses are excluded',
         record=str(args.record), game=str(args.game))

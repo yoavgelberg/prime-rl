@@ -311,6 +311,19 @@ class InteractiveWorkerMixin:
             raise RuntimeError('No native-game cohort is active')
         return _cohort.finish()
 
+    def ps_game_device_metrics(self):
+        import torch
+
+        storages = {value.untyped_storage().data_ptr(): value.untyped_storage().nbytes()
+                    for value in self.model_runner.kv_caches}
+        properties = torch.cuda.get_device_properties(self.device)
+        return dict(rank=self.vllm_config.parallel_config.data_parallel_rank,
+            gpu_name=properties.name, device_total_bytes=properties.total_memory,
+            kv_pool_allocated_bytes=sum(storages.values()),
+            peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
+            peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device),
+            kv_scope='Shared allocated inference KV pool; distinct from per-game logical retained keys')
+
     def ps_game_release(self):
         global _cohort
         if _cohort is None or not all(row['done'] for row in _cohort.status().values()):

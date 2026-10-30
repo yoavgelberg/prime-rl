@@ -20,7 +20,7 @@ class RunConfig:
     source_sha256: str
     gpus: int = 8
     concurrency: int = 4
-    evaluation_concurrency: int = 8
+    evaluation_concurrency: int = 16
     seed: int = 11
     updates: int = 32
     window: int = 1024
@@ -39,8 +39,10 @@ class RunConfig:
     def __post_init__(self):
         if self.gpus not in (1, 2, 4, 8) or 8 % self.gpus:
             raise ValueError('The fixed eight-board batch requires 1, 2, 4 or 8 GPU replicas')
-        if self.concurrency not in range(1, 5) or self.evaluation_concurrency not in range(1, 9):
+        if self.concurrency not in range(1, 5) or self.evaluation_concurrency not in range(1, 65):
             raise ValueError('Training concurrency must fit the audited host-memory ceiling of four')
+        if type(self.window) is not int or self.window < 1:
+            raise ValueError('Window size must be a positive token count')
         if Path(self.model).name != self.revision:
             raise ValueError('Training/reference/tokenizer must use the immutable starting snapshot')
         if len(self.source_sha256) != 64 or any(c not in '0123456789abcdef' for c in self.source_sha256):

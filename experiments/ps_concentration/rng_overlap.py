@@ -58,7 +58,7 @@ def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False)
                           sliding_window=config.window if attention == 'ps' else None),
         additional_config=dict(ps_streaming=asdict(stream)),
         attention_backend='CUSTOM' if attention == 'ps' else 'FLASH_ATTN',
-        cudagraph_capture_sizes=[size for size in (1, 2, 4, 8) if size <= maximum])
+        cudagraph_capture_sizes=[size for size in (1, 2, 4, 8, 16, 32, 64) if size <= maximum])
 
 
 def make_engine(config, *, attention='ps', checkpoint=None, evaluation=False):
@@ -114,8 +114,14 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
             pending.append(spec)
     started = time.perf_counter()
     for batch in cohorts(pending, config.gpus, config.evaluation_concurrency):
+        accounting = output / 'cohorts' / f'cohort-{time.time_ns()}.json'
+        started_wall = time.time()
+        write_json(accounting, dict(status='started', wall_start=started_wall, gpus=config.gpus,
+            episode_ids=[spec['episode_id'] for spec in batch], job=os.environ.get('SLURM_JOB_ID')))
         report = await runner.collect(FACTORY, worker_options(config, batch, output,
             attention=attention, greedy=True), policy_version=policy_version)
+        write_json(accounting, dict(status='complete', wall_start=started_wall, wall_end=time.time(),
+            gpus=config.gpus, job=os.environ.get('SLURM_JOB_ID'), report=report))
         rows.extend(report['episodes'])
         write_json(output / 'progress.json', dict(completed=len(rows), total=len(specs), **identity))
         await runner.release()
@@ -124,6 +130,14 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
         raise ValueError('Evaluation must contain every reserved board exactly once')
     metrics = dict(episode_metrics(rows), **identity, split=split,
                    current_process_seconds=time.perf_counter() - started)
+    accounting = [json.loads(path.read_text()) for path in (output / 'cohorts').glob('*.json')]
+    complete = [row for row in accounting if row['status'] == 'complete']
+    metrics.update(completed_cohort_inference_seconds=sum(row['report']['seconds'] for row in complete),
+        completed_cohort_gpu_hours=sum(row['report']['seconds'] * row['gpus'] / 3600 for row in complete),
+        unfinished_cohort_accounting=len(accounting) - len(complete),
+        peak_kv_pool_allocated_bytes=max((device['kv_pool_allocated_bytes'] for row in complete
+            for device in row['report'].get('devices', [])), default=0),
+        inference_cost_scope='Complete recorded cohorts, excluding setup; a lower bound when interrupted cohorts lack a complete receipt. Slurm allocation cost reported separately.')
     (output / 'episodes.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in rows))
     write_json(output / 'summary.json', metrics)
     return metrics
@@ -178,6 +192,8 @@ def aggregate_update(reports, materialized, kl_reports, steps, *, update, second
     backward = [rank for report in reports for rank in report['backward']]
     metrics['peak_allocated_bytes'] = max(row.get('peak_allocated_bytes', 0) for row in backward)
     metrics['peak_reserved_bytes'] = max(row.get('peak_reserved_bytes', 0) for row in backward)
+    metrics['peak_kv_pool_allocated_bytes'] = max((device['kv_pool_allocated_bytes'] for report in reports
+        for device in report.get('devices', [])), default=0)
     return metrics
 
 
@@ -196,6 +212,7 @@ def setup_wandb(config):
     wandb.define_metric('train/update')
     wandb.define_metric('train/*', step_metric='train/update')
     wandb.define_metric('validation/*', step_metric='train/update')
+    wandb.define_metric('reference_full/*', step_metric='train/update')
     write_json(Path(config.output) / 'wandb.json', dict(url=wandb.run.url, id=wandb.run.id))
     return monitor
 
@@ -207,6 +224,17 @@ def log_metrics(monitor, prefix, metrics, version):
     values['train/episodes'] = version * 64
     monitor.log(values)
     print(json.dumps(dict(event=prefix, **metrics)), flush=True)
+
+
+def pilot_gate(full, initial, trained):
+    values = dict(full_matched_fraction=full['matched_fraction'], full_minimum=.8,
+        initial_matched_fraction_gap=full['matched_fraction'] - initial['matched_fraction'], gap_minimum=.10,
+        ps_return_improvement=trained['mean_return'] - initial['mean_return'], improvement_minimum=.05,
+        trained_format_error_rate=trained['format_error_rate'], format_error_maximum=.01)
+    passed = (values['full_matched_fraction'] >= .8 and values['initial_matched_fraction_gap'] >= .10
+              and values['ps_return_improvement'] >= .05 and values['trained_format_error_rate'] < .01)
+    return dict(status='GO' if passed else 'HOLD', **values,
+        full_rl_skipped=True, interpretation='Numerical gate report; expansion remains an agent review of the completed pilot')
 
 
 async def train(config, engine, monitor, competence):
@@ -257,6 +285,11 @@ async def train(config, engine, monitor, competence):
         metrics = await evaluate_games(config, runner, split='validation',
             output=output / 'validation' / f'update-{version:04d}', label=f'val-u{version:04d}',
             policy_version=version, policy_identity=f'{config.wandb_id}:update-{version}')
+        if version == 0:
+            write_json(output / 'initial-comparison.json', dict(full_reference=competence, ps_reference=metrics,
+                matched_fraction_gap=competence['matched_fraction'] - metrics['matched_fraction'],
+                efficiency_return_gap=competence['mean_return'] - metrics['mean_return'],
+                paired_board_split=competence.get('split') == 'validation' and competence.get('episodes') == 128))
         if best_return is None or metrics['mean_return'] > best_return:
             best_return, best_update = metrics['mean_return'], version
         log_metrics(monitor, 'validation', metrics, version)
@@ -307,8 +340,13 @@ async def train(config, engine, monitor, competence):
         log_metrics(monitor, 'train', metrics, version)
         if version % config.validation_interval == 0 or version == config.updates:
             await validate()
+    gate = None
+    if version >= 32:
+        initial = json.loads((output / 'validation/update-0000/summary.json').read_text())
+        trained = json.loads((output / 'validation' / f'update-{version:04d}/summary.json').read_text())
+        gate = pilot_gate(competence, initial, trained)
     write_json(output / 'pilot-complete.json', dict(updates=version, episodes=version * 64,
-        best_update=best_update, best_return=best_return, expansion_authorized=False))
+        best_update=best_update, best_return=best_return, automatic_matrix_expansion=False, pilot_gate=gate))
 
 
 def lock_run(config):
@@ -331,21 +369,30 @@ def main():
     parser.add_argument('--split', choices=['screening', 'validation', 'test', 'intervention'], default='screening')
     parser.add_argument('--checkpoint')
     parser.add_argument('--competence')
+    parser.add_argument('--window', type=int, help='Evaluation window sweep; training remains W=1024')
+    parser.add_argument('--count', type=int, help='Evaluate the first N fixed split boards, e.g. 128 for window sweeps')
     args = parser.parse_args()
     config = RunConfig(**json.loads(Path(args.config).read_text()))
+    if args.window is not None:
+        config = replace(config, window=args.window)
+    if args.mode == 'train' and args.count is not None:
+        parser.error('--count is evaluation-only; training uses the complete fixed global batch')
     lock_run(config)
     competence = None
     if args.mode == 'train':
         if not args.competence:
             parser.error('Training requires a completed same-engine full-context competence screening')
         competence = json.loads(Path(args.competence).read_text())
-        if (competence.get('attention') != 'full' or competence.get('episodes') != 64
-                or not competence.get('greedy') or competence.get('split') != 'screening'
+        if (competence.get('attention') != 'full'
+                or (competence.get('episodes'), competence.get('split')) not in ((64, 'screening'), (128, 'validation'))
+                or not competence.get('greedy')
                 or competence.get('policy_version') != 0 or competence.get('policy_identity') != config.revision):
-            raise ValueError('The competence reference must be 64 complete greedy full-context screening boards')
+            raise ValueError('The competence reference must be a complete greedy full-context screening or validation split')
         if competence['matched_fraction'] < .8:
             raise ValueError(f'HOLD: full-context matched fraction {competence["matched_fraction"]:.6f} < .8')
     monitor = setup_wandb(config) if args.mode == 'train' else None
+    if monitor is not None:
+        log_metrics(monitor, 'reference_full', competence, 0)
     engine = make_engine(config, attention=args.attention, checkpoint=args.checkpoint,
                          evaluation=args.mode == 'evaluate')
     try:
@@ -361,7 +408,7 @@ def main():
                 version, identity = receipt['policy_version'], str(Path(args.checkpoint).resolve())
             metrics = asyncio.run(evaluate_games(config, GameRolloutRunner(engine), split=args.split,
                 output=Path(config.output) / 'evaluation' / args.split, label=f'{args.attention}-u{version}',
-                attention=args.attention, policy_version=version, policy_identity=identity))
+                attention=args.attention, policy_version=version, policy_identity=identity, count=args.count))
             metrics['status'] = 'GO' if metrics['matched_fraction'] >= .8 else 'HOLD'
             metrics['competence_threshold'] = .8
             write_json(Path(config.output) / 'evaluation' / args.split / 'summary.json', metrics)

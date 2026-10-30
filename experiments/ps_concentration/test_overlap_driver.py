@@ -48,7 +48,7 @@ def test_board_groups_and_generation_rngs_survive_physical_layout_changes(tmp_pa
 def test_engine_memory_and_position_configuration(tmp_path):
     cfg = config(tmp_path)
     ps = driver.engine_options(cfg)
-    assert ps['max_num_seqs'] == 8
+    assert ps['max_num_seqs'] == 16
     assert ps['additional_config']['ps_streaming']['max_requests'] == 4
     assert ps['additional_config']['ps_streaming']['loss_denominator'] == 26624
     assert ps['additional_config']['ps_streaming']['weight_gradient_backend'] == 'cublas'
@@ -107,7 +107,7 @@ def test_one_fresh_update_saves_before_validation_and_uses_every_trajectory(tmp_
     monkeypatch.setattr(driver, 'worker_rpc', rpc)
     monkeypatch.setattr(driver, 'handoff_requested', lambda: False)
     monitor = type('Monitor', (), dict(log=lambda self, value: logged.append(value)))()
-    asyncio.run(driver.train(cfg, object(), monitor, dict(matched_fraction=.9)))
+    asyncio.run(driver.train(cfg, object(), monitor, dict(matched_fraction=.9, mean_return=.75, episodes=128, split='validation')))
     step = next(index for index, call in enumerate(calls) if call[0] == 'ps_train_step')
     save = next(index for index in range(step + 1, len(calls)) if calls[index][0] == 'ps_train_save')
     val = next(index for index in range(step + 1, len(calls)) if calls[index][:2] == ('collect', False))
@@ -143,3 +143,15 @@ def test_partial_or_repeated_batches_cannot_advance_an_update(tmp_path):
     duplicate.append(duplicate[-1])
     with pytest.raises(ValueError, match='64 distinct'):
         driver.aggregate_update([dict(episodes=duplicate)], [], [], [], update=1, seconds=1., gpus=8)
+
+
+def test_pilot_reports_exact_gate_values_without_changing_window_or_hiding_hold():
+    full = dict(matched_fraction=.95)
+    initial = dict(matched_fraction=.2, mean_return=-.6)
+    trained = dict(mean_return=-.5, format_error_rate=.005)
+    gate = driver.pilot_gate(full, initial, trained)
+    assert gate['status'] == 'GO'
+    assert gate['initial_matched_fraction_gap'] == pytest.approx(.75)
+    assert gate['ps_return_improvement'] == pytest.approx(.1)
+    held = driver.pilot_gate(full, initial, dict(trained, mean_return=-.58))
+    assert held['status'] == 'HOLD' and held['ps_return_improvement'] == pytest.approx(.02)

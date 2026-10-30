@@ -26,6 +26,10 @@ class NativeTeacher(ConcentrationQwen):
     def linear(self, inputs, weight, bias=None):
         return effective_bf16(super().linear(inputs, weight, bias))
 
+    def attention(self, q, k, v, indices, prefix_length, plan):
+        return ps_attention(q.bfloat16(), k.bfloat16(), v.bfloat16(),
+                            indices, indices, prefix_length, self.window, self.backend, plan)
+
     def _layer(self, layer, hidden, cos, sin, indices, prefix_length, plan):
         normalized = native_rms(hidden, layer.input_layernorm)
         residual = effective_bf16(hidden)
@@ -37,8 +41,7 @@ class NativeTeacher(ConcentrationQwen):
         q = effective_bf16(q * cos + rotate_half(q) * sin)
         k = effective_bf16(k * cos + rotate_half(k) * sin)
         with torch.autocast(hidden.device.type, enabled=False):
-            output = ps_attention(q.bfloat16(), k.bfloat16(), v.bfloat16(),
-                indices, indices, prefix_length, self.window, self.backend, plan)
+            output = self.attention(q, k, v, indices, prefix_length, plan)
         mid = residual + self.project(attn.o_proj, output.transpose(1, 2).reshape(1, count, -1))
         normalized = native_rms(mid, layer.post_attention_layernorm)
         gate, up = self.project(layer.mlp.gate_proj, normalized), self.project(layer.mlp.up_proj, normalized)

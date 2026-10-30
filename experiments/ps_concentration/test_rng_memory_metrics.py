@@ -2,6 +2,9 @@ from .rng_memory_metrics import known_match_decisions, summarize
 
 
 class CharacterTokenizer:
+    def encode(self, text, **kwargs):
+        return list(map(ord, text))
+
     def decode(self, tokens, **kwargs):
         return ''.join(map(chr, tokens))
 

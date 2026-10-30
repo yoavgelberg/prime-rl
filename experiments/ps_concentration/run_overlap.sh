@@ -53,7 +53,7 @@ root = Path(sys.argv[1])
 base = root.parent
 model = base / 'hf/hub/models--Qwen--Qwen3-4B-Thinking-2507/snapshots/768f209d9ea81521153ed38c47d515654e938aea'
 source = base / 'rngbench-source-e3d195e857727dfa3d4a96561be202098d67da83'
-for name, concurrency in [('full-reference', 4), ('ps-seed11', 8)]:
+for name, concurrency in [('full-reference', 4), ('ps-seed11', 128 // int(os.environ['PS_RUN_GPUS']))]:
     config = RunConfig(model=str(model), source=str(source), output=str(root / name),
         source_sha256=os.environ['PS_SOURCE_SHA256'], gpus=int(os.environ['PS_RUN_GPUS']),
         evaluation_concurrency=concurrency)
@@ -66,10 +66,10 @@ write_json(root / f'launch-{os.environ["SLURM_JOB_ID"]}.json', dict(
 PY
 full_config="$campaign/full-reference-config-$SLURM_JOB_ID.json"
 ps_config="$campaign/ps-seed11-config-$SLURM_JOB_ID.json"
-competence="$campaign/full-reference/evaluation/screening/summary.json"
+competence="$campaign/full-reference/evaluation/validation/summary.json"
 if [[ ! -f "$competence" ]]; then
     "$PS_PYTHON_BIN" -u -m experiments.ps_concentration.rng_overlap evaluate --config "$full_config" \
-        --attention full --split screening > "$allocation_root/full-reference-$SLURM_JOB_ID.log" 2>&1
+        --attention full --split validation > "$allocation_root/full-reference-$SLURM_JOB_ID.log" 2>&1
 fi
 "$PS_PYTHON_BIN" -u -m experiments.ps_concentration.rng_overlap train --config "$ps_config" \
     --attention ps --competence "$competence" > "$allocation_root/ps-grpo-$SLURM_JOB_ID.log" 2>&1

@@ -27,6 +27,8 @@ class Engine:
             result = None
         elif method == 'ps_game_finish':
             result = [dict(episode_id=f'game{rank}', generated_tokens=rank + 2)]
+        elif method == 'ps_game_device_metrics':
+            result = dict(rank=rank, kv_pool_allocated_bytes=2048)
         elif method in ('ps_game_release', 'ps_game_abort'):
             result = None
         else:

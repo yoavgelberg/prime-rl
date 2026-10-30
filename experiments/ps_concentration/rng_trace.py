@@ -21,7 +21,7 @@ def export(record_path, game_path, tokenizer, output):
     decisions = known_match_decisions(record, game, tokenizer)
     by_response = {row['response_index']: row for row in decisions}
     complete = [turn for turn in record['turns'] if turn['stop_condition'] != 'transcript_capacity']
-    scored = score_prefix(game, len(complete))
+    scored = score_prefix(game, record.get('max_responses', 96))
     header = ['Actual native-thinking model token stream: Matching Pairs',
         f'Attention={record["attention"]}; W={record["window"]}; P={record["prefix_length"]}.',
         f'Observed pairs={scored["score"]}/{scored["total_pairs"]}; responses={len(complete)}; context_censored={record.get("censored", False)}.',

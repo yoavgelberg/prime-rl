@@ -83,6 +83,7 @@ class GameRolloutRunner:
             await asyncio.gather(*tasks.values())
             rows = await worker_rpc(self.engine, 'ps_game_finish')
             backward_rows = await worker_rpc(self.engine, 'ps_stream_finish') if backward else None
+            devices = await worker_rpc(self.engine, 'ps_game_device_metrics')
             if backward_rows is not None:
                 for rank, report in enumerate(backward_rows):
                     expected = sum(row['generated_tokens'] for row in rows[rank])
@@ -92,7 +93,7 @@ class GameRolloutRunner:
             return dict(episodes=[row for rank in rows for row in rank], backward=backward_rows,
                 seconds=time.perf_counter() - started, engine_output_tokens=sum(engine_tokens.values()),
                 engine_tokens_per_request=engine_tokens, policy_version=policy_version,
-                physical_ranks=ranks, greedy=options.get('greedy', False))
+                physical_ranks=ranks, devices=devices, greedy=options.get('greedy', False))
         except BaseException:
             await self.engine.abort(identities)
             await worker_rpc(self.engine, 'ps_game_abort', kwargs=dict(reason='Rollout coordinator aborted'))
