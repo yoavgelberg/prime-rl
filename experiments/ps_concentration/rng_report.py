@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .overlap_config import BoardProtocol, board_protocol, episode_metrics
+from .overlap_config import BoardProtocol, SPLITS, board_protocol, episode_metrics
 from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions, summarize
 from .rng_training_config import outcome_reward
 
@@ -36,9 +36,24 @@ def seed_summary(rows):
     if len(set(seeds)) != len(seeds) or any(seed is None for seed in seeds):
         raise ValueError('Training variability requires distinct, identified independent training runs')
     means = np.array([row['mean_return'] for row in rows])
+    metrics = {}
+    names = ('mean_return', 'mean_pairs', 'matched_fraction', 'completion_rate', 'mean_attempts_to_completion',
+        'completed_only_mean_attempts', 'completed_only_denominator', 'mean_attempts', 'format_errors',
+        'format_error_rate', 'native_invalid_actions', 'resource_terminations', 'generated_tokens',
+        'raw_transcript_tokens', 'mean_per_game_tokens_per_second', 'peak_kv_pool_allocated_bytes',
+        'completed_cohort_inference_seconds', 'completed_cohort_gpu_hours',
+        'known_match_recent_utilization', 'known_match_middle_utilization', 'known_match_old_utilization',
+        'known_match_recent_opportunities', 'known_match_middle_opportunities', 'known_match_old_opportunities')
+    for name in names:
+        values = np.array([row[name] for row in rows if row.get(name) is not None], dtype=float)
+        if any(name in row for row in rows):
+            metrics[name] = dict(mean=float(values.mean()) if len(values) else None,
+                sample_std=float(values.std(ddof=1)) if len(values) > 1 else None,
+                defined_training_runs=len(values))
     return dict(training_seeds=seeds, independent_training_runs=len(seeds),
         mean_return=float(means.mean()),
         training_seed_std=float(means.std(ddof=1)) if len(means) > 1 else None,
+        metrics=metrics,
         scope='Equal weighting of per-training-seed means; boards are not independent training runs')
 
 
@@ -50,11 +65,15 @@ def load_condition(entry, *, allow_partial=False):
     expected = entry['expected_boards']
     if not rows or len(rows) > expected or (not allow_partial and len(rows) != expected):
         raise ValueError(f'{entry["name"]}: {len(rows)} episodes, expected {expected}; partial reports require --allow-partial')
+    start, limit = SPLITS[entry['split']]
+    reserved = set(range(start, start + expected))
+    if expected > limit or not set(seeds) <= reserved or (len(rows) == expected and set(seeds) != reserved):
+        raise ValueError('An evaluation condition must use its fixed reserved board seeds')
     if entry.get('greedy') is not True or any(row.get('greedy') is not True for row in rows):
         raise ValueError('The final comparison requires greedy evaluation, never sampled training trajectories')
-    board = board_protocol(entry['split']).identity()
+    board, standard = board_protocol(entry['split']).identity(), BoardProtocol().identity()
     for row in rows:
-        if any(row.get(key, BoardProtocol().identity()[key]) != value for key, value in board.items()):
+        if any(row.get(key, standard[key]) != value for key, value in board.items()):
             raise ValueError('An evaluation condition mixes board sizes or attempt limits')
         actual = outcome_reward(row, row.get('max_responses', 96), -1.)
         if abs(actual - row['training_return']) > 1e-10:
@@ -68,13 +87,15 @@ def load_condition(entry, *, allow_partial=False):
         summary = json.loads(Path(entry['summary']).read_text())
         if (summary['episodes'] != len(rows) or summary['attention'] != entry['attention']
                 or summary['window'] != entry['window']
-                or any(summary.get(key, BoardProtocol().identity()[key]) != value for key, value in board.items())):
+                or any(summary.get(key, standard[key]) != value for key, value in board.items())):
             raise ValueError('System-metric summary belongs to a different evaluation condition')
         for name in ('peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
                      'completed_cohort_gpu_hours', 'unfinished_cohort_accounting'):
             metrics[name] = summary.get(name)
     return dict(entry, **metrics, **{key: value for key, value in board.items() if key not in metrics},
-                episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
+        board_seeds_sha256=hashlib.sha256(json.dumps(sorted(seeds)).encode()).hexdigest(),
+        evaluation_scope='window_sweep' if entry['split'] == 'test' and expected == 128 else entry['split'],
+        episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
 
 
 def analyze_condition(condition, tokenizer, *, examples=None):
@@ -106,8 +127,26 @@ def analyze_condition(condition, tokenizer, *, examples=None):
                 game_path = json.load(handle)['native_game_json']
             export(token_path, game_path, tokenizer, Path(examples) / f'board-{row["board_seed"]}')
             example_count += 1
-    return dict(known_match=summarize(decisions), example_transcripts=example_count,
+    known = summarize(decisions)
+    flattened = {}
+    for label, age in [('recent', '<=W'), ('middle', '(W,2W]'), ('old', '>2W')]:
+        flattened[f'known_match_{label}_utilization'] = known[age]['utilization']
+        flattened[f'known_match_{label}_opportunities'] = known[age]['opportunities']
+    return dict(known_match=known, **flattened, example_transcripts=example_count,
         decision_scope='Completed native responses, including invalid attempts; unfinished resource-censored responses excluded')
+
+
+def aggregate_conditions(conditions):
+    groups = {}
+    for condition in conditions:
+        if condition['training_seed'] is not None:
+            key = (condition['policy'], condition['attention'], condition['window'], condition['split'],
+                   condition['expected_boards'], condition['board_seeds_sha256'])
+            groups.setdefault(key, []).append(condition)
+    return [dict(policy=key[0], attention=key[1], window=key[2], split=key[3],
+                 boards_per_training_seed=key[4], board_seeds_sha256=key[5],
+                 complete_split=all(row['complete_split'] for row in rows), **seed_summary(rows))
+            for key, rows in groups.items()]
 
 
 def summarize_manifest(manifest, *, allow_partial=False):
@@ -134,13 +173,7 @@ def summarize_manifest(manifest, *, allow_partial=False):
             control_policy=sliding['policy'],
             full_rl_control_skipped=sliding['policy'] == 'base')
         comparisons.append(result)
-    groups = {}
-    for condition in conditions:
-        if condition['training_seed'] is not None:
-            key = (condition['policy'], condition['attention'], condition['window'], condition['split'])
-            groups.setdefault(key, []).append(condition)
-    aggregate = [dict(policy=key[0], attention=key[1], window=key[2], split=key[3], **seed_summary(rows))
-                 for key, rows in groups.items()]
+    aggregate = aggregate_conditions(conditions)
     interventions = []
     for entry in manifest.get('interventions', []):
         summary = json.loads(Path(entry['summary']).read_text())
@@ -158,18 +191,32 @@ def summarize_manifest(manifest, *, allow_partial=False):
 def save_tables(result, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    fields = ['name', 'policy', 'training_seed', 'split', 'attention', 'window', 'board_rows', 'board_cols',
-        'distinct_ranks', 'total_pairs', 'max_responses', 'episodes', 'complete_split',
+    fields = ['name', 'policy', 'training_seed', 'split', 'evaluation_scope', 'attention', 'window', 'board_rows', 'board_cols',
+        'distinct_ranks', 'total_pairs', 'max_responses', 'episodes', 'expected_boards', 'board_seeds_sha256', 'complete_split',
         'mean_return', 'mean_pairs', 'matched_fraction', 'completion_rate', 'mean_attempts_to_completion',
         'completed_only_mean_attempts', 'completed_only_denominator', 'mean_attempts', 'format_errors',
         'native_invalid_actions', 'resource_terminations', 'generated_tokens', 'raw_transcript_tokens',
         'mean_per_game_tokens_per_second', 'peak_kv_pool_allocated_bytes', 'completed_cohort_inference_seconds',
-        'completed_cohort_gpu_hours', 'unfinished_cohort_accounting']
-    for filename, larger in [('main-comparison.csv', False), ('size-generalization.csv', True)]:
+        'completed_cohort_gpu_hours', 'unfinished_cohort_accounting',
+        'known_match_recent_utilization', 'known_match_middle_utilization', 'known_match_old_utilization',
+        'known_match_recent_opportunities', 'known_match_middle_opportunities', 'known_match_old_opportunities']
+    tables = [('main-comparison.csv', lambda row:row['evaluation_scope'] not in ('larger', 'window_sweep')),
+        ('size-generalization.csv', lambda row:row['evaluation_scope'] == 'larger'),
+        ('window-sweep.csv', lambda row:row['evaluation_scope'] == 'window_sweep')]
+    for filename, include in tables:
         with (output / filename).open('w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=fields, extrasaction='ignore')
             writer.writeheader()
-            writer.writerows(row for row in result['conditions'] if (row['split'] == 'larger') == larger)
+            writer.writerows(row for row in result['conditions'] if include(row))
+    summary_fields = ['policy', 'attention', 'window', 'split', 'boards_per_training_seed',
+        'board_seeds_sha256', 'complete_split', 'training_seeds', 'independent_training_runs',
+        'metric', 'mean', 'sample_std', 'defined_training_runs']
+    with (output / 'training-seed-summary.csv').open('w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=summary_fields, extrasaction='ignore')
+        writer.writeheader()
+        for group in result['training_seed_summaries']:
+            for name, values in group['metrics'].items():
+                writer.writerow(dict(group, metric=name, **values))
     clean = dict(result, conditions=[{key: value for key, value in row.items() if key != 'rows'}
                                     for row in result['conditions']])
     (output / 'summary.json').write_text(json.dumps(clean, indent=2, allow_nan=False) + '\n')
@@ -183,6 +230,7 @@ def save_tables(result, output):
             f'{row["mean_pairs"]:.4f}/{row["total_pairs"]} | {row["mean_return"]:.4f} | {row["mean_attempts"]:.2f} | {row["resource_terminations"]} |')
     lines += ['', 'Resource-limited episodes retain observed pairs but receive the separately recorded -1 training reward. Their unobserved attempt-cap endpoints are not imputed as measured outcomes.', '',
               'Size generalization is a parameter-scaled RNG-Bench board, reported separately in size-generalization.csv. More copies per rank can make some decisions easier; this is not a claim of strictly greater difficulty.', '',
+              'training-seed-summary.csv reports means and sample standard deviations across independent training seeds for each metric. Undefined metrics retain their number of defined training runs. Different board sets, including the 512-board test and 128-board window sweep, remain separate.', '',
               result['interpretation'], '',
               'Paired intervals below use 10,000 resamples over board seeds within a fixed training seed. Training-seed standard deviations describe independent training runs; episode counts are not training replication.', '']
     for row in result['paired_comparisons']:
@@ -214,6 +262,19 @@ def save_tables(result, output):
     (output / 'README.md').write_text('\n'.join(lines) + '\n')
 
 
+def window_series(conditions):
+    series = {}
+    for row in conditions:
+        if row['attention'] == 'ps' and row['split'] == 'test':
+            key = (row['policy'], row['training_seed'], row['board_seeds_sha256'])
+            series.setdefault(key, []).append(row)
+    for rows in series.values():
+        if len({row['window'] for row in rows}) != len(rows):
+            raise ValueError('A window curve requires one outcome per window on an identical board set')
+        rows.sort(key=lambda row: row['window'])
+    return series
+
+
 def plots(result, manifest, output):
     import matplotlib
     matplotlib.use('Agg')
@@ -235,16 +296,14 @@ def plots(result, manifest, output):
             ax.legend(frameon=False)
             fig.tight_layout(); fig.savefig(output / 'return-vs-training-episodes.png', dpi=180)
         plt.close(fig)
-    sliding = [row for row in result['conditions'] if row['attention'] == 'ps' and row['split'] == 'test']
-    series = {}
-    for row in sliding:
-        series.setdefault((row['policy'], row['training_seed']), []).append(row)
-    if sliding:
+    series = window_series(result['conditions'])
+    if series:
         fig, ax = plt.subplots(figsize=(7, 4.5))
-        for (policy, seed), rows in series.items():
-            rows.sort(key=lambda row: row['window'])
+        for (policy, seed, _), rows in series.items():
+            label = policy if seed is None else f'{policy} seed {seed}'
+            label += f' ({rows[0]["episodes"]} boards)'
             ax.plot([row['window'] for row in rows], [row['mean_return'] for row in rows], marker='o',
-                label=policy if seed is None else f'{policy} seed {seed}')
+                label=label)
         ax.set(xlabel='Rolling window W (tokens)', ylabel='Greedy test efficiency return', xscale='log')
         ax.legend(frameon=False)
         fig.tight_layout(); fig.savefig(output / 'final-return-vs-window.png', dpi=180); plt.close(fig)
@@ -279,6 +338,7 @@ def main():
             if examples is not None and (condition['attention'] != 'ps' or condition['training_seed'] is None):
                 raise ValueError('The 20 memory examples must be from a trained PS policy')
             condition.update(analyze_condition(condition, tokenizer, examples=examples))
+        result['training_seed_summaries'] = aggregate_conditions(result['conditions'])
     save_tables(result, args.output)
     plots(result, manifest, args.output)
     print(json.dumps(dict(conditions=len(result['conditions']), comparisons=len(result['paired_comparisons']),

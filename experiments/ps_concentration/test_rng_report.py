@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from .rng_report import load_condition, paired_bootstrap, save_tables, seed_summary, summarize_manifest
+from .rng_report import analyze_condition, load_condition, paired_bootstrap, save_tables, seed_summary, summarize_manifest, window_series
 
 
 def episodes(seed=11, delta=0.):
@@ -43,6 +43,40 @@ def test_training_variability_is_over_independent_training_seeds():
         seed_summary([dict(training_seed=11, mean_return=.1)] * 512)
 
 
+def test_seed_statistics_cover_task_metrics_and_retain_undefined_denominators():
+    rows = [dict(training_seed=seed, mean_return=score / 10, mean_pairs=score,
+                 completion_rate=score / 8, completed_only_mean_attempts=attempts)
+            for seed, score, attempts in [(11, 2, None), (22, 4, 40), (33, 6, 60)]]
+    result = seed_summary(rows)
+    assert result['metrics']['mean_pairs'] == dict(mean=4., sample_std=2., defined_training_runs=3)
+    assert result['metrics']['completion_rate']['sample_std'] == .25
+    completed = result['metrics']['completed_only_mean_attempts']
+    assert completed['defined_training_runs'] == 2 and completed['mean'] == 50
+    assert completed['sample_std'] == pytest.approx(2**.5 * 10)
+
+
+def test_reveal_age_statistics_keep_empty_bins_undefined(tmp_path):
+    import gzip
+    import hashlib
+    from .test_rng_memory_metrics import CharacterTokenizer, example
+
+    record, game = example()
+    game_path, token_path = tmp_path / 'game.json', tmp_path / 'tokens.json.gz'
+    game_path.write_text(json.dumps(game))
+    record['native_game_json'] = str(game_path)
+    with gzip.open(token_path, 'wt') as handle:
+        json.dump(record, handle)
+    row = dict(board_seed=2000000, token_record=str(token_path),
+               token_record_sha256=hashlib.sha256(token_path.read_bytes()).hexdigest())
+    diagnostic = analyze_condition(dict(rows=[row]), CharacterTokenizer())
+    assert diagnostic['known_match_old_utilization'] == 1.
+    assert diagnostic['known_match_old_opportunities'] == 1
+    assert diagnostic['known_match_recent_utilization'] is None
+    stats = seed_summary([dict(training_seed=11, mean_return=0., **diagnostic)])['metrics']
+    assert stats['known_match_recent_utilization'] == dict(mean=None, sample_std=None, defined_training_runs=0)
+    assert stats['known_match_old_utilization'] == dict(mean=1., sample_std=None, defined_training_runs=1)
+
+
 def test_context_censor_keeps_pairs_but_has_explicit_resource_reward(tmp_path):
     rows = episodes()
     rows[0].update(censored=True, score=2, done=False, response_count=77, training_return=-1.)
@@ -60,6 +94,9 @@ def test_incomplete_splits_and_sampled_training_rows_cannot_be_final_results(tmp
     assert not load_condition(entry, allow_partial=True)['complete_split']
     rows = episodes(); rows[0]['greedy'] = False
     with pytest.raises(ValueError, match='greedy evaluation'):
+        load_condition(condition(tmp_path, rows))
+    rows = episodes(); rows[0]['board_seed'] = 1000000
+    with pytest.raises(ValueError, match='reserved board seeds'):
         load_condition(condition(tmp_path, rows))
 
 
@@ -113,3 +150,31 @@ def test_size_generalization_uses_sixteen_pairs_and_separate_table(tmp_path):
     rows[0]['total_pairs'] = 8
     with pytest.raises(ValueError, match='board sizes'):
         load_condition(condition(tmp_path, rows, name='wrong', split='larger'))
+
+
+def test_window_sweeps_and_full_test_remain_distinct_in_statistics_curves_and_tables(tmp_path):
+    entries = []
+    for seed in (11, 22, 33):
+        for window, count, label in [(1024, 512, 'main'), (1024, 128, 'sweep'), (512, 128, 'sweep')]:
+            rows = [dict(episodes(seed)[0], board_seed=2000000 + index,
+                         episode_id=f's{seed}-b{index}', window=window) for index in range(count)]
+            entries.append(condition(tmp_path, rows, name=f's{seed}-{window}-{label}', training_seed=seed,
+                                     window=window, expected_boards=count))
+    result = summarize_manifest(dict(conditions=entries))
+    groups = result['training_seed_summaries']
+    assert len(groups) == 3 and all(group['independent_training_runs'] == 3 for group in groups)
+    assert sorted(group['boards_per_training_seed'] for group in groups) == [128, 128, 512]
+    curves = window_series(result['conditions'])
+    assert len(curves) == 6
+    for rows in curves.values():
+        assert len({row['board_seeds_sha256'] for row in rows}) == 1
+        assert [row['window'] for row in rows] == ([512,1024] if rows[0]['episodes'] == 128 else [1024])
+    save_tables(result, tmp_path / 'report')
+    import csv
+    with (tmp_path / 'report/window-sweep.csv').open() as handle:
+        assert len(list(csv.DictReader(handle))) == 6
+    with (tmp_path / 'report/main-comparison.csv').open() as handle:
+        assert len(list(csv.DictReader(handle))) == 3
+    with (tmp_path / 'report/training-seed-summary.csv').open() as handle:
+        pairs = [row for row in csv.DictReader(handle) if row['metric'] == 'mean_pairs']
+    assert len(pairs) == 3 and all(row['defined_training_runs'] == '3' for row in pairs)
