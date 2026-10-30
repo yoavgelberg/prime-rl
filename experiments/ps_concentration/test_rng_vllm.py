@@ -20,6 +20,8 @@ def test_native_result_saves_evaluation_identity_and_actual_board_denominator(tm
     subject.paths, subject.specs = {'evaluation':tmp_path}, {'evaluation':identity}
     chat = SimpleNamespace(entropy_tokens=4, entropy_sum=6., old_tempered_logps=[-.5] * 4,
         generated_tokens=4, tokens=[1, 2, 3, 4], started=0.,
+        thinking_token_limit=128, action_token_limit=None, thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n',
+        budget_enforcement='forced_thinking_transition', turns=[dict(thinking_tokens=2, thinking_budget_forced=False)],
         record=lambda:dict(old_tempered_logps=[-.5] * 4, loss_mask=[True] * 4),
         finish=lambda **kwargs:None)
     subject.chats = {'evaluation':chat}

@@ -278,3 +278,50 @@ def test_vllm_sample_routing_preserves_forced_mask_and_skips_discarded_prefill()
     assert calls[0][2] == pytest.approx(float((logits[0] / .6).log_softmax(-1)[3]))
 
     assert calls[0][3] == pytest.approx(float(torch.distributions.Categorical(logits=logits[0] / .6).entropy()))
+
+
+def test_forced_semantic_transition_excludes_addendum_from_128_token_budget_and_loss():
+    tokenizer = ChatTokenizer()
+    cue = '\n\nOkay, time to give the answer.</think>\n\n'
+    client = PersistentChat(tokenizer, eos_token_ids=[1003, 1004], transcript_cap=4096,
+        timeout=3, thinking_token_limit=128, thinking_budget_transition=cue)
+    messages = [dict(role='system', content='Rules'), dict(role='user', content='Board')]
+    responses = []
+
+    def play():
+        response = client.chat(messages)
+        responses.append(response)
+        responses.append(client.chat([*messages, dict(role='assistant', content=response['content']),
+                                      dict(role='user', content='Next board')]))
+        client.finish()
+
+    worker = Thread(target=play, daemon=True)
+    worker.start()
+    client.initial_prompt()
+    script = tokenizer.encode('x' * 128 + 'Action: aA\n' + 'y</think>\nAction: bB\n')
+    cursor = 0
+    while cursor < len(script):
+        decision = client.advance(script[cursor], -.3, -.5, entropy=.75)
+        if decision.target != -100:
+            cursor += 1
+        elif decision.role == 'thinking_budget':
+            assert decision.target == -100
+    worker.join(3)
+    assert not worker.is_alive()
+    record = client.record()
+    first, second = record['turns']
+    assert [response['content'] for response in responses] == ['Action: aA', 'Action: bB']
+    assert [first['thinking_tokens'], second['thinking_tokens']] == [128, 1]
+    assert first['thinking_budget_forced'] and not second['thinking_budget_forced']
+    assert first['stop_condition'] == second['stop_condition'] == 'action_line'
+    assert record['action_token_limit'] is None
+    assert sum(record['loss_mask']) == record['entropy_tokens'] == len(script)
+    forced = [i for i, role in enumerate(record['roles']) if role == 'thinking_budget']
+    assert [record['tokens'][i] for i in forced] == tokenizer.encode(cue)
+    assert all(not record['loss_mask'][i] and record['old_logps'][i] is None
+               and record['old_tempered_logps'][i] is None for i in forced)
+    assert record['positions'] == list(range(len(record['tokens'])))
+    for turn in record['turns']:
+        assert [record['tokens'][i] for i in turn['sampled_positions']] == turn['sampled_ids']
+        assert all(record['loss_mask'][i] for i in turn['sampled_positions'])
+    assert tokenizer.decode(record['tokens'][first['start']:first['end']]) == 'x' * 128 + cue + 'Action: aA\n'

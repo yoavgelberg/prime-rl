@@ -82,3 +82,6 @@ python -m experiments.ps_concentration.baseline_memory_report --run-dir HISTORIC
 ```
 
 It verifies all64 paired boards and fixed system-prefix identities, reads only completed native responses, and reports pooled known-match utilization with a paired board bootstrap. The policies visit different decision states; these diagnostics are not a shared-state causal comparison. Historical sampling (temperature .6/top-p .95/top-k20) and custom StreamingQwen arithmetic remain explicit, and are kept separate from the native-vLLM greedy qualification and trained-policy results.
+
+
+The cue128 protocol sets `thinking_token_limit=128`, `action_token_limit=null`, and `thinking_budget_transition="\n\nOkay, time to give the answer.</think>\n\n"`. After 128 sampled thinking-body tokens, the controller inserts this transition with role `thinking_budget`, zero direct loss, and no sampled likelihood. Its tokens count toward the rolling context and original positions but do not count toward the thinking or generated-policy token budget. A natural earlier `</think>` skips the insertion. Final answers remain sampled until the existing action-line or EOS stop; no forced action prefix is added. Training and evaluation use the same configuration. Saved `sampled_positions` identify policy tokens across the forced insertion.

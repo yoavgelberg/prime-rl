@@ -32,7 +32,7 @@ def export(record_path, game_path, tokenizer, output):
         native = game['turns'][index] if index < len(complete) else None
         query = action_query(tokenizer, record['tokens'][turn['start']:turn['end']], turn['start'],
                              native['parse']['coord'] if native and native['parse']['ok'] else None)
-        annotations = [f'RESPONSE {index + 1}: sampled [{turn["start"]},{turn["end"]}); stop={turn["stop_condition"]}']
+        annotations = [f'RESPONSE {index + 1}: raw span [{turn["start"]},{turn["end"]}); stop={turn["stop_condition"]}']
         if record['attention'] == 'ps':
             start = max(record['prefix_length'], query - record['window'] + 1)
             annotations.append(f'At action query {query}: prefix [0,{record["prefix_length"]}) plus suffix [{start},{query + 1}); earlier suffix text evicted.')
@@ -43,8 +43,16 @@ def export(record_path, game_path, tokenizer, output):
         context = tokenizer.decode(record['tokens'][cursor:turn['start']], skip_special_tokens=False)
         for lines in (full, compact):
             lines.extend(['\n' + '=' * 72, *annotations, '\nNEW ENVIRONMENT/TEMPLATE TOKENS', context])
-        full.extend(['\nSAMPLED ASSISTANT TOKENS, INCLUDING ALL NATIVE THINKING',
-                     tokenizer.decode(record['tokens'][turn['start']:turn['end']], skip_special_tokens=False)])
+        full.append('\nASSISTANT STREAM, INCLUDING NATIVE THINKING AND LABELED FORCED INSERTIONS')
+        begin = turn['start']
+        while begin < turn['end']:
+            role = record['roles'][begin]
+            end = begin + 1
+            while end < turn['end'] and record['roles'][end] == role:
+                end += 1
+            full.extend([f'[{role}; direct_loss={record["loss_mask"][begin]}; tokens {begin}:{end}]',
+                         tokenizer.decode(record['tokens'][begin:end], skip_special_tokens=False)])
+            begin = end
         compact.extend(['\nFINAL RESPONSE', turn.get('content', '')])
         cursor = turn['end']
     if cursor < size:

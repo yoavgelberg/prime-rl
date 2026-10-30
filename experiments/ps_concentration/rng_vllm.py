@@ -23,7 +23,7 @@ class GameCohort:
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
                  context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8,
-                 thinking_token_limit=None, action_token_limit=None):
+                 thinking_token_limit=None, action_token_limit=None, thinking_budget_transition=None):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
@@ -78,7 +78,7 @@ Do not continue reasoning after </think> or start another thinking block.
             self.paths[identity] = folder
             self.chats[identity] = PersistentChat(self.tokenizer, eos_token_ids=eos,
                 transcript_cap=transcript_cap, thinking_token_limit=thinking_token_limit,
-                action_token_limit=action_token_limit,
+                action_token_limit=action_token_limit, thinking_budget_transition=thinking_budget_transition,
                 on_turn=lambda turn, identity=identity: self._turn(identity, turn))
         self.pool = ThreadPoolExecutor(max_workers=max(len(self.chats), 1))
         self.futures = {identity: self.pool.submit(self._play, identity) for identity in self.chats}
@@ -126,7 +126,8 @@ Do not continue reasoning after </think> or start another thinking block.
             row['entropy_tokens'] = chat.entropy_tokens
             row['thinking_token_limit'] = chat.thinking_token_limit
             row['action_token_limit'] = chat.action_token_limit
-            row['budget_enforcement'] = 'stop_without_inserted_format_tokens'
+            row['budget_enforcement'] = chat.budget_enforcement
+            row['thinking_budget_transition'] = chat.thinking_budget_transition
             row['thinking_tokens'] = sum(turn['thinking_tokens'] for turn in chat.turns)
             row['thinking_budget_forced_turns'] = sum(turn['thinking_budget_forced'] for turn in chat.turns)
             row['mean_policy_entropy_at_temperature'] = chat.entropy_sum / chat.entropy_tokens if chat.entropy_tokens else None

@@ -24,6 +24,7 @@ class RunConfig:
     parallel_rank_collection: bool = False
     thinking_token_limit: int | None = None
     action_token_limit: int | None = None
+    thinking_budget_transition: str | None = None
     seed: int = 11
     updates: int = 32
     window: int = 1024
@@ -50,6 +51,8 @@ class RunConfig:
             raise ValueError('Thinking token limit must be a positive integer or None')
         if self.action_token_limit is not None and (type(self.action_token_limit) is not int or self.action_token_limit < 1):
             raise ValueError('Action token limit must be a positive integer or None')
+        if self.thinking_budget_transition is not None and (self.thinking_token_limit is None or not isinstance(self.thinking_budget_transition, str) or not self.thinking_budget_transition.endswith('</think>\n\n') or self.thinking_budget_transition.count('</think>') != 1):
+            raise ValueError('Thinking transition requires a token limit and one native closing delimiter')
         if type(self.window) is not int or self.window < 1:
             raise ValueError('Window size must be a positive token count')
         if Path(self.model).name != self.revision:
@@ -82,7 +85,9 @@ class RunConfig:
             training_seed=self.seed, reference_checkpoint=self.model, window=self.window,
             transcript_cap=self.transcript_cap, max_responses=self.max_responses,
             thinking_token_limit=self.thinking_token_limit,
-            action_token_limit=self.action_token_limit, budget_enforcement='stop_without_inserted_format_tokens',
+            action_token_limit=self.action_token_limit, thinking_budget_transition=self.thinking_budget_transition,
+            budget_enforcement=('forced_thinking_transition' if self.thinking_budget_transition is not None
+                                else 'stop_without_inserted_format_tokens'),
             temperature=self.temperature, top_p=1., top_k=-1, kl_coefficient=self.kl_coefficient,
             outcome=asdict(OutcomeConfig()), reward='pairs/8-attempts/96; resource exhaustion -1')
 

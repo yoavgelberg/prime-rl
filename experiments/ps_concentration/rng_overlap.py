@@ -83,6 +83,7 @@ def worker_options(config, specs, output, *, attention='ps', greedy=False, board
         temperature=config.temperature, greedy=greedy,
         thinking_token_limit=config.thinking_token_limit,
         action_token_limit=config.action_token_limit,
+        thinking_budget_transition=config.thinking_budget_transition,
         context_exhaustion_reward=-1.)
 
 

@@ -20,7 +20,7 @@ class TokenDecision:
 
 class PersistentChat:
     def __init__(self, tokenizer, *, eos_token_ids, transcript_cap, timeout=60., on_turn=None,
-                 thinking_token_limit=None, action_token_limit=None):
+                 thinking_token_limit=None, action_token_limit=None, thinking_budget_transition=None):
         self.tokenizer, self.eos = tokenizer, set(eos_token_ids)
         self.transcript_cap, self.timeout, self.on_turn = transcript_cap, timeout, on_turn
         if thinking_token_limit is not None and (type(thinking_token_limit) is not int or thinking_token_limit < 1):
@@ -52,6 +52,16 @@ class PersistentChat:
         if len(newline) != 1:
             raise ValueError('The action-line terminator must have one token')
         self.newline = newline[0]
+        if thinking_budget_transition is not None:
+            if thinking_token_limit is None or not isinstance(thinking_budget_transition, str):
+                raise ValueError('A thinking transition requires text and a thinking token limit')
+            if thinking_budget_transition.count('</think>') != 1 or not thinking_budget_transition.endswith('</think>\n\n'):
+                raise ValueError('The thinking transition must end with the native closing delimiter and two newlines')
+        self.thinking_budget_transition = thinking_budget_transition
+        self.transition_tokens = (tokenizer.encode(thinking_budget_transition, add_special_tokens=False)
+                                  if thinking_budget_transition is not None else [])
+        self.budget_enforcement = ('forced_thinking_transition' if self.transition_tokens
+                                   else 'stop_without_inserted_format_tokens')
 
     @staticmethod
     def _text(message):
@@ -147,7 +157,7 @@ class PersistentChat:
             sampled_positions=self.sampled_positions.copy(), thinking_tokens=self.thinking_tokens,
             thinking_token_limit=self.thinking_token_limit, thinking_budget_forced=self.thinking_budget_forced)
         turn.update(action_tokens=self.action_tokens, action_token_limit=self.action_token_limit,
-                    budget_enforcement='stop_without_inserted_format_tokens')
+                    budget_enforcement=self.budget_enforcement, thinking_budget_transition=self.thinking_budget_transition)
         self.turns.append(turn)
         if self.on_turn is not None:
             self.on_turn(turn)
@@ -206,7 +216,12 @@ class PersistentChat:
             stop = 'eos' if proposed in self.eos else None
             if (stop is None and self.final_start is None and self.thinking_token_limit is not None
                     and self.thinking_tokens >= self.thinking_token_limit):
-                stop = 'thinking_token_limit'
+                if self.transition_tokens:
+                    self.queue.extend((token, 'thinking_budget') for token in self.transition_tokens)
+                    self.thinking_budget_forced = True
+                    self.final_start = len(self.tokens) + len(self.transition_tokens)
+                else:
+                    stop = 'thinking_token_limit'
             if stop is None and proposed == self.newline and self.final_start is not None:
                 final = self.tokenizer.decode(self.tokens[self.final_start:], skip_special_tokens=True)
                 if re.search(r'(?:^|\n)Action:\s*[a-z][A-Z][ \t]*\n', final):
@@ -248,7 +263,7 @@ class PersistentChat:
                 old_tempered_logps=self.old_tempered_logps.copy(), turns=self.turns.copy(),
                 prefix_length=len(self.prefix), thinking_retained=True, entropy_tokens=self.entropy_tokens,
                 thinking_token_limit=self.thinking_token_limit,
-                action_token_limit=self.action_token_limit, budget_enforcement='stop_without_inserted_format_tokens',
+                action_token_limit=self.action_token_limit, budget_enforcement=self.budget_enforcement, thinking_budget_transition=self.thinking_budget_transition,
                 thinking_budget_forced_turns=sum(turn['thinking_budget_forced'] for turn in self.turns),
                 mean_policy_entropy_at_temperature=self.entropy_sum / self.entropy_tokens if self.entropy_tokens else None)
 
