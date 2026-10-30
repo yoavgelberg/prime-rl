@@ -26,6 +26,49 @@ class ChatTokenizer:
         return self.encode(text) if tokenize else text
 
 
+def test_thinking_budget_forces_only_the_delimiter_and_resets_between_turns():
+    tokenizer = ChatTokenizer()
+    client = PersistentChat(tokenizer, eos_token_ids=[1003, 1004], transcript_cap=4096,
+                            timeout=3, thinking_token_limit=128)
+    messages = [dict(role='system', content='Rules'), dict(role='user', content='Board')]
+    responses = []
+
+    def play():
+        response = client.chat(messages)
+        responses.append(response)
+        responses.append(client.chat([*messages, dict(role='assistant', content=response['content']),
+                                      dict(role='user', content='Next board')]))
+        client.finish()
+
+    worker = Thread(target=play, daemon=True)
+    worker.start()
+    client.initial_prompt()
+    count = 0
+    while count < 128:
+        count += client.advance(ord('x'), -.3, -.5, entropy=.75).target != -100
+    forced = client.advance(ord('z'), -.3, -.5, entropy=.75)
+    assert forced.token == 1001 and forced.target == -100 and forced.role == 'thinking_budget'
+    script = tokenizer.encode('\nAction: aA\n' + 'y</think>\nAction: bB\n')
+    cursor = 0
+    while cursor < len(script):
+        if client.advance(script[cursor], -.3, -.5, entropy=.75).target != -100:
+            cursor += 1
+    worker.join(3)
+    assert not worker.is_alive()
+    record = client.record()
+    assert [response['content'] for response in responses] == ['Action: aA', 'Action: bB']
+    assert [turn['thinking_tokens'] for turn in record['turns']] == [128, 1]
+    assert [turn['thinking_budget_forced'] for turn in record['turns']] == [True, False]
+    assert record['thinking_budget_forced_turns'] == 1
+    assert sum(record['loss_mask']) == 128 + len(script) == record['entropy_tokens']
+    for turn in record['turns']:
+        positions = turn['sampled_positions']
+        assert [record['tokens'][index] for index in positions] == turn['sampled_ids']
+        assert all(record['loss_mask'][index] for index in positions)
+    index = record['roles'].index('thinking_budget')
+    assert not record['loss_mask'][index] and record['old_tempered_logps'][index] is None
+
+
 @pytest.mark.parametrize("scratch_length", [16, 2304])
 def test_native_multiturn_stream_preserves_tokens_and_only_samples_have_loss(scratch_length):
     tokenizer = ChatTokenizer()

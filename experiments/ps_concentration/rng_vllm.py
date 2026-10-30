@@ -22,10 +22,12 @@ from .overlap_config import BoardProtocol
 class GameCohort:
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
-                 context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8):
+                 context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8,
+                 thinking_token_limit=None):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
+        self.thinking_token_limit = thinking_token_limit
         self.board = BoardProtocol(rows=rows, cols=cols, num_cards=num_cards, max_responses=max_responses)
         if self.board.cols != 4 and (not greedy or attention != 'ps'):
             raise ValueError('The larger board is reserved for greedy PS evaluation')
@@ -62,13 +64,17 @@ class GameCohort:
 After thinking, end your final response with exactly one action line:
 Action: <coordinate, e.g. cD>
 '''
+        if thinking_token_limit is not None:
+            prompts.OUTPUT_FORMAT_NO_COT += (f'Your thinking budget is {thinking_token_limit} tokens per move. '
+                'Keep your reasoning within this budget, then give the required action.\n')
         self.run_one_game, self.state = single_normal.run_one_game, state
         for identity, spec in self.specs.items():
             folder = self.output / identity
             folder.mkdir(exist_ok=False)
             self.paths[identity] = folder
             self.chats[identity] = PersistentChat(self.tokenizer, eos_token_ids=eos,
-                transcript_cap=transcript_cap, on_turn=lambda turn, identity=identity: self._turn(identity, turn))
+                transcript_cap=transcript_cap, thinking_token_limit=thinking_token_limit,
+                on_turn=lambda turn, identity=identity: self._turn(identity, turn))
         self.pool = ThreadPoolExecutor(max_workers=max(len(self.chats), 1))
         self.futures = {identity: self.pool.submit(self._play, identity) for identity in self.chats}
         self.results = None
@@ -113,6 +119,9 @@ Action: <coordinate, e.g. cD>
                 raise ValueError('Offline native score differs from the environment result')
             row['training_return'] = outcome_reward(row, self.max_responses, self.context_exhaustion_reward)
             row['entropy_tokens'] = chat.entropy_tokens
+            row['thinking_token_limit'] = chat.thinking_token_limit
+            row['thinking_tokens'] = sum(turn['thinking_tokens'] for turn in chat.turns)
+            row['thinking_budget_forced_turns'] = sum(turn['thinking_budget_forced'] for turn in chat.turns)
             row['mean_policy_entropy_at_temperature'] = chat.entropy_sum / chat.entropy_tokens if chat.entropy_tokens else None
             row['negative_logp_sum'] = -sum(value for value in chat.old_tempered_logps if value is not None)
             row['board_identity_sha256'] = hashlib.sha256(native['config']['ground_truth_text'].encode()).hexdigest()

@@ -19,9 +19,14 @@ class TokenDecision:
 
 
 class PersistentChat:
-    def __init__(self, tokenizer, *, eos_token_ids, transcript_cap, timeout=60., on_turn=None):
+    def __init__(self, tokenizer, *, eos_token_ids, transcript_cap, timeout=60., on_turn=None,
+                 thinking_token_limit=None):
         self.tokenizer, self.eos = tokenizer, set(eos_token_ids)
         self.transcript_cap, self.timeout, self.on_turn = transcript_cap, timeout, on_turn
+        if thinking_token_limit is not None and (type(thinking_token_limit) is not int or thinking_token_limit < 1):
+            raise ValueError('Thinking token limit must be a positive integer or None')
+        self.thinking_token_limit = thinking_token_limit
+        self.thinking_tokens, self.thinking_budget_forced = 0, False
         self.condition = Condition()
         self.ready = Event()
         self.queue = deque()
@@ -29,6 +34,7 @@ class PersistentChat:
         self.prefix, self.system, self.close = None, None, None
         self.request, self.seen = None, 0
         self.sampled, self.sample_logps = [], []
+        self.sampled_positions = []
         self.final_start, self.turn_start = None, 0
         self.done, self.error, self.resource_reason = False, None, None
         self.generated_tokens = 0
@@ -107,6 +113,8 @@ class PersistentChat:
             request = dict(event=Event(), messages=len(messages), response=None, error=None)
             self.request = request
             self.sampled, self.sample_logps, self.final_start = [], [], None
+            self.sampled_positions = []
+            self.thinking_tokens, self.thinking_budget_forced = 0, False
             self.turn_start = len(self.tokens) + len(self.queue)
             self.turn_started = time.perf_counter()
             self.ready.set()
@@ -126,11 +134,13 @@ class PersistentChat:
             return list(self.prefix)
 
     def _end_turn(self, stop):
-        text = self.tokenizer.decode(self.sampled, skip_special_tokens=True)
+        text = self.tokenizer.decode(self.tokens[self.turn_start:], skip_special_tokens=True)
         reasoning, final = text.rsplit('</think>', 1) if '</think>' in text else (text, '')
         turn = dict(start=self.turn_start, end=len(self.tokens), sampled_ids=self.sampled.copy(),
             old_logps=self.sample_logps.copy(), stop_condition=stop, reasoning=reasoning,
-            content=final.strip(), seconds=time.perf_counter() - self.turn_started)
+            content=final.strip(), seconds=time.perf_counter() - self.turn_started,
+            sampled_positions=self.sampled_positions.copy(), thinking_tokens=self.thinking_tokens,
+            thinking_token_limit=self.thinking_token_limit, thinking_budget_forced=self.thinking_budget_forced)
         self.turns.append(turn)
         if self.on_turn is not None:
             self.on_turn(turn)
@@ -146,8 +156,10 @@ class PersistentChat:
             if self.sampled:
                 self.turns.append(dict(start=self.turn_start, end=len(self.tokens),
                     sampled_ids=self.sampled.copy(), old_logps=self.sample_logps.copy(),
-                    stop_condition='transcript_capacity', reasoning=self.tokenizer.decode(self.sampled,
-                    skip_special_tokens=False), content=''))
+                    stop_condition='transcript_capacity', reasoning=self.tokenizer.decode(self.tokens[self.turn_start:],
+                    skip_special_tokens=False), content='', sampled_positions=self.sampled_positions.copy(),
+                    thinking_tokens=self.thinking_tokens, thinking_token_limit=self.thinking_token_limit,
+                    thinking_budget_forced=self.thinking_budget_forced))
             self.request['error'] = error
             self.request['event'].set()
             self.request = None
@@ -170,17 +182,26 @@ class PersistentChat:
                 token, role = self.queue.popleft()
                 self._append(token, role)
                 return TokenDecision(token, -100, role)
+            if (self.final_start is None and self.thinking_token_limit is not None
+                    and self.thinking_tokens >= self.thinking_token_limit):
+                self._append(self.thinking_end, 'thinking_budget')
+                self.final_start = len(self.tokens)
+                self.thinking_budget_forced = True
+                return TokenDecision(self.thinking_end, -100, 'thinking_budget')
             self._append(proposed, 'assistant', raw_logp, tempered_logp)
+            self.sampled_positions.append(len(self.tokens) - 1)
             if entropy is not None:
                 self.entropy_sum += entropy
                 self.entropy_tokens += 1
             self.sampled.append(proposed)
             self.sample_logps.append(raw_logp)
             if proposed == self.thinking_end:
-                self.final_start = len(self.sampled)
+                self.final_start = len(self.tokens)
+            elif self.final_start is None and proposed not in self.eos:
+                self.thinking_tokens += 1
             stop = 'eos' if proposed in self.eos else None
             if stop is None and proposed == self.newline and self.final_start is not None:
-                final = self.tokenizer.decode(self.sampled[self.final_start:], skip_special_tokens=True)
+                final = self.tokenizer.decode(self.tokens[self.final_start:], skip_special_tokens=True)
                 if re.search(r'(?:^|\n)Action:\s*[a-z][A-Z][ \t]*\n', final):
                     stop = 'action_line'
             if stop is not None:
@@ -217,6 +238,8 @@ class PersistentChat:
                 loss_mask=[role == 'assistant' for role in self.roles], old_logps=self.old_logps.copy(),
                 old_tempered_logps=self.old_tempered_logps.copy(), turns=self.turns.copy(),
                 prefix_length=len(self.prefix), thinking_retained=True, entropy_tokens=self.entropy_tokens,
+                thinking_token_limit=self.thinking_token_limit,
+                thinking_budget_forced_turns=sum(turn['thinking_budget_forced'] for turn in self.turns),
                 mean_policy_entropy_at_temperature=self.entropy_sum / self.entropy_tokens if self.entropy_tokens else None)
 
 
