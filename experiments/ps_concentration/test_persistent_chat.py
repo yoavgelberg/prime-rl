@@ -26,10 +26,10 @@ class ChatTokenizer:
         return self.encode(text) if tokenize else text
 
 
-def test_thinking_budget_forces_only_the_delimiter_and_resets_between_turns():
+def test_natural_formatting_has_only_sampled_assistant_tokens_and_resets_between_turns():
     tokenizer = ChatTokenizer()
     client = PersistentChat(tokenizer, eos_token_ids=[1003, 1004], transcript_cap=4096,
-                            timeout=3, thinking_token_limit=128, force_action_prefix=True, action_token_limit=16)
+                            timeout=3, thinking_token_limit=128, action_token_limit=16)
     messages = [dict(role='system', content='Rules'), dict(role='user', content='Board')]
     responses = []
 
@@ -43,12 +43,7 @@ def test_thinking_budget_forces_only_the_delimiter_and_resets_between_turns():
     worker = Thread(target=play, daemon=True)
     worker.start()
     client.initial_prompt()
-    count = 0
-    while count < 128:
-        count += client.advance(ord('x'), -.3, -.5, entropy=.75).target != -100
-    forced = client.advance(ord('z'), -.3, -.5, entropy=.75)
-    assert forced.token == 1001 and forced.target == -100 and forced.role == 'thinking_budget'
-    script = tokenizer.encode(' aA\n' + 'y</think> bB\n')
+    script = tokenizer.encode('brief.\n</think>\nAction: aA\n' + 'y</think>\nAction: bB\n')
     cursor = 0
     while cursor < len(script):
         if client.advance(script[cursor], -.3, -.5, entropy=.75).target != -100:
@@ -57,23 +52,20 @@ def test_thinking_budget_forces_only_the_delimiter_and_resets_between_turns():
     assert not worker.is_alive()
     record = client.record()
     assert [response['content'] for response in responses] == ['Action: aA', 'Action: bB']
-    assert [turn['thinking_tokens'] for turn in record['turns']] == [128, 1]
-    assert [turn['thinking_budget_forced'] for turn in record['turns']] == [True, False]
-    assert record['thinking_budget_forced_turns'] == 1
-    assert sum(record['loss_mask']) == 128 + len(script) == record['entropy_tokens']
+    assert [turn['thinking_tokens'] for turn in record['turns']] == [7, 1]
+    assert record['thinking_budget_forced_turns'] == 0
+    assert sum(record['loss_mask']) == len(script) == record['entropy_tokens']
+    assert set(record['roles']) <= {'prefix', 'template', 'environment_template', 'assistant'}
     for turn in record['turns']:
-        positions = turn['sampled_positions']
-        assert [record['tokens'][index] for index in positions] == turn['sampled_ids']
-        assert all(record['loss_mask'][index] for index in positions)
-    index = record['roles'].index('thinking_budget')
-    assert not record['loss_mask'][index] and record['old_tempered_logps'][index] is None
-    assert record['roles'].count('action_template') == 2 * len(tokenizer.encode('\nAction:'))
+        assert record['tokens'][turn['start']:turn['end']] == turn['sampled_ids']
+        assert all(record['loss_mask'][turn['start']:turn['end']])
 
 
-def test_reopened_thinking_cannot_escape_the_short_action_budget():
+@pytest.mark.parametrize('end_thinking', [False, True])
+def test_budget_ends_overlong_replies_without_inserting_format_tokens(end_thinking):
     tokenizer = ChatTokenizer()
     client = PersistentChat(tokenizer, eos_token_ids=[1003, 1004], transcript_cap=4096,
-        timeout=3, thinking_token_limit=128, force_action_prefix=True, action_token_limit=16)
+        timeout=3, thinking_token_limit=128, action_token_limit=16)
     responses = []
 
     def play():
@@ -83,18 +75,22 @@ def test_reopened_thinking_cannot_escape_the_short_action_budget():
     worker = Thread(target=play, daemon=True)
     worker.start()
     client.initial_prompt()
-    count = 0
-    while count < 144:
-        decision = client.advance(ord('x') if count < 128 else 1001, -.3, -.5, entropy=.75)
-        count += decision.target != -100
+    script = ([1001] + [1001] * 16) if end_thinking else [ord('x')] * 128
+    cursor = 0
+    while cursor < len(script):
+        if client.advance(script[cursor], -.3, -.5, entropy=.75).target != -100:
+            cursor += 1
     worker.join(3)
     assert not worker.is_alive()
     record = client.record()
     turn = record['turns'][0]
-    assert turn['stop_condition'] == 'action_token_limit'
-    assert turn['thinking_tokens'] == 128 and turn['action_tokens'] == 16
-    assert record['thinking_budget_forced_turns'] == 1
-    assert sum(record['loss_mask']) == len(turn['sampled_ids']) == 144
+    assert turn['stop_condition'] == ('action_token_limit' if end_thinking else 'thinking_token_limit')
+    assert turn['thinking_tokens'] == (0 if end_thinking else 128)
+    assert turn['action_tokens'] == (16 if end_thinking else 0)
+    assert record['thinking_budget_forced_turns'] == 0
+    assert sum(record['loss_mask']) == len(turn['sampled_ids']) == len(script)
+    assert record['tokens'][turn['start']:turn['end']] == script
+    assert all(record['loss_mask'][turn['start']:turn['end']])
 
 
 @pytest.mark.parametrize("scratch_length", [16, 2304])

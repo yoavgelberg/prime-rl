@@ -82,7 +82,7 @@ def worker_options(config, specs, output, *, attention='ps', greedy=False, board
         max_responses=board.max_responses, rows=board.rows, cols=board.cols, num_cards=board.num_cards,
         temperature=config.temperature, greedy=greedy,
         thinking_token_limit=config.thinking_token_limit,
-        action_token_limit=config.action_token_limit, force_action_prefix=config.force_action_prefix,
+        action_token_limit=config.action_token_limit,
         context_exhaustion_reward=-1.)
 
 

@@ -23,7 +23,7 @@ class GameCohort:
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
                  context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8,
-                 thinking_token_limit=None, action_token_limit=None, force_action_prefix=False):
+                 thinking_token_limit=None, action_token_limit=None):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
@@ -61,12 +61,15 @@ class GameCohort:
         from common import prompts
         single_normal.make_client = shim.make_client
         prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
-After thinking, end your final response with exactly one action line:
+After thinking, your entire final answer must be exactly one action line:
 Action: <coordinate, e.g. cD>
+Do not put explanations, analysis, headings, or additional lines in the final answer.
+Do not continue reasoning after </think> or start another thinking block.
 '''
         if thinking_token_limit is not None:
             prompts.OUTPUT_FORMAT_NO_COT += (f'Your thinking budget is {thinking_token_limit} tokens per move. '
-                'Keep your reasoning within this budget, then give the required action.\n')
+                'Use a few short sentences, finish reasoning within this budget, and give the required action. '
+                'If uncertain, choose your best available action within the budget instead of continuing deliberation.\n')
         self.run_one_game, self.state = single_normal.run_one_game, state
         for identity, spec in self.specs.items():
             folder = self.output / identity
@@ -74,7 +77,7 @@ Action: <coordinate, e.g. cD>
             self.paths[identity] = folder
             self.chats[identity] = PersistentChat(self.tokenizer, eos_token_ids=eos,
                 transcript_cap=transcript_cap, thinking_token_limit=thinking_token_limit,
-                action_token_limit=action_token_limit, force_action_prefix=force_action_prefix,
+                action_token_limit=action_token_limit,
                 on_turn=lambda turn, identity=identity: self._turn(identity, turn))
         self.pool = ThreadPoolExecutor(max_workers=max(len(self.chats), 1))
         self.futures = {identity: self.pool.submit(self._play, identity) for identity in self.chats}
@@ -122,7 +125,7 @@ Action: <coordinate, e.g. cD>
             row['entropy_tokens'] = chat.entropy_tokens
             row['thinking_token_limit'] = chat.thinking_token_limit
             row['action_token_limit'] = chat.action_token_limit
-            row['force_action_prefix'] = chat.force_action_prefix
+            row['budget_enforcement'] = 'stop_without_inserted_format_tokens'
             row['thinking_tokens'] = sum(turn['thinking_tokens'] for turn in chat.turns)
             row['thinking_budget_forced_turns'] = sum(turn['thinking_budget_forced'] for turn in chat.turns)
             row['mean_policy_entropy_at_temperature'] = chat.entropy_sum / chat.entropy_tokens if chat.entropy_tokens else None
