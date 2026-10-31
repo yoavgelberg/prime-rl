@@ -1,12 +1,30 @@
 import copy
 import gzip
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from . import hero_memory as module
 from .rng_intervene import summarize_results
+
+
+def test_intervention_coordinator_import_never_probes_or_initializes_cuda():
+    program = '''
+import torch
+def forbidden(*args, **kwargs):
+    raise AssertionError('Intervention coordinator probed CUDA before its idle-device check')
+torch.cuda.is_available = lambda: True
+torch.cuda.is_bf16_supported = forbidden
+torch.cuda.current_device = forbidden
+import experiments.ps_concentration.hero_memory
+assert not torch.cuda.is_initialized()
+'''
+    subprocess.run([sys.executable, '-c', program], check=True,
+        env=dict(os.environ, CUDA_VISIBLE_DEVICES=''))
 
 
 def save_states(path, states):

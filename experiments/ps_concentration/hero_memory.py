@@ -15,7 +15,7 @@ import time
 
 from .hero_exports import file_hash, write
 from .hero_finish import completed_condition, ready, require_idle_devices
-from .rng_intervene import summarize_results
+from .rng_intervention_summary import summarize_results
 
 
 def read(path):
@@ -89,7 +89,8 @@ def execute(checkpoint, states_path, reference, source, output, *, gpus, invoke=
     states = read_states(states_path)
     implementation = [Path(__file__), Path(__file__).with_name('rng_intervene.py'),
         Path(__file__).with_name('native_cold.py'), Path(__file__).with_name('native_teacher.py'),
-        Path(__file__).with_name('rng_intervention_states.py')]
+        Path(__file__).with_name('rng_intervention_states.py'),
+        Path(__file__).with_name('rng_intervention_summary.py')]
     from prime_rl.inference.vllm import ps_interactive
     implementation.append(Path(ps_interactive.__file__))
     session = dict(checkpoint=str(Path(checkpoint).resolve()), checkpoint_metadata=file_hash(Path(checkpoint) / 'experiment.json'),
