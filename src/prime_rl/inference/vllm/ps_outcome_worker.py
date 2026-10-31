@@ -79,6 +79,7 @@ class OutcomeWorkerMixin:
                     mean_sum_error=abs(float(stream.loss) - row['negative_logp_sum']) / stream.loss_tokens))
                 self.ps_reduced_requests.add(identity)
                 self.ps_train_records.append(row)
+            graph_retention = live.graph_cache.trim_attention(8)
             graphs = None
             if capture_graphs and any(stage.graph is None for stage in live.graph_cache.stages.values()):
                 with torch.enable_grad():
@@ -89,6 +90,7 @@ class OutcomeWorkerMixin:
                 stream.gradients.clear()
             live.model.zero_grad(set_to_none=True)
         return dict(episodes=len(rows), audits=audits, graphs=graphs,
+            graph_cache_retention=graph_retention,
             cpu_group_buffers_bytes=sum(value.numel() * value.element_size() for group in trainer.groups.values()
                 for values in (group.gradient_sum, group.reward_gradient_sum) for value in values.values()),
             gpu_allocated_bytes=torch.cuda.memory_allocated())

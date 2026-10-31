@@ -110,6 +110,9 @@ class RecordedGraphCache:
                 raise RuntimeError(f"Unwarmed recorded-backward graph shape: {key}")
             self.stages[key] = _Stage(function, values, rows, fills, dtypes)
         stage = self.stages[key]
+        if key[0] == "attention":
+            self.stages.pop(key)
+            self.stages[key] = stage
         if stage.graph is not None:
             self.replays += 1
         else:
@@ -117,6 +120,17 @@ class RecordedGraphCache:
                 raise RuntimeError(f"Uncaptured recorded-backward stage: {key}")
             self.eager_calls += 1
         return stage.run(values)
+
+    def trim_attention(self, maximum):
+        if maximum < 0:
+            raise ValueError("Attention graph retention must be nonnegative")
+        attention = [key for key in self.stages if key[0] == "attention"]
+        remove = max(0, len(attention) - maximum)
+        for key in attention[:remove]:
+            del self.stages[key]
+        self.plans = AlignedChunkPlans()
+        return dict(attention_before=len(attention), attention_retained=len(attention) - remove,
+                    attention_evicted=remove, maximum_attention=maximum, total_stages=len(self.stages))
 
     def capture(self):
         start = time.perf_counter()
