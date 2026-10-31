@@ -60,6 +60,27 @@ def test_current_thinking_cannot_qualify_as_retained_memory_for_the_primary_inte
     assert diagnostic[0]['decision_position'] == len(record['tokens']) - 3
 
 
+def test_primary_qualification_does_not_filter_out_malformed_streaming_actions():
+    record, game = fixture()
+    start = record['turns'][-1]['start']
+    text = '</think>\nMalformed\n'
+    record['tokens'][start:] = list(map(ord, text))
+    record['roles'][start:] = ['assistant'] * len(text)
+    record['turns'][-1]['end'] = len(record['tokens'])
+    game['turns'][-1]['parse'] = dict(ok=False, coord=None)
+    game['turns'][-1]['env_result'] = dict(applied=False)
+    states = collect_states(record, game, CharacterTokenizer())
+    assert len(states) == 1 and states[0]['streaming_action'] is None
+    assert states[0]['decision_position'] == start
+
+
+def test_unfinished_source_turns_cannot_silently_hide_qualification_opportunities():
+    record, game = fixture()
+    record['turns'][-1]['stop_condition'] = 'transcript_capacity'
+    with pytest.raises(ValueError, match='qualification coverage unknown'):
+        collect_states(record, game, CharacterTokenizer())
+
+
 def test_recent_notes_never_replace_old_direct_environment_reveal_age():
     record, game = fixture()
     state = collect_states(record, game, CharacterTokenizer())[0]

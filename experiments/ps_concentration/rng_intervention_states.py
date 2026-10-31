@@ -161,9 +161,11 @@ def collect_states(record, game, tokenizer, *, maximum=128, manual=None, boundar
         raise ValueError('Memory interventions require greedy PS trajectories')
     if boundary not in ('before_thinking', 'first_coordinate'):
         raise ValueError('Unknown intervention boundary')
+    if boundary == 'before_thinking' and any(turn['stop_condition'] == 'transcript_capacity' for turn in record['turns']):
+        raise ValueError('An unfinished source response leaves intervention qualification coverage unknown')
     states = []
     for decision in known_match_decisions(record, game, tokenizer):
-        if decision['chosen'] is None:
+        if decision['chosen'] is None and boundary == 'first_coordinate':
             continue
         window = record['window']
         query = decision['turn_start'] - 1 if boundary == 'before_thinking' else decision['query_position']
