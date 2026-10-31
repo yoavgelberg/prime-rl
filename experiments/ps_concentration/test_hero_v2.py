@@ -1,12 +1,13 @@
 import math
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 import torch
 
 from .hero_objective import advantages, shaped_return, token_objective
-from .hero_v2 import HeroConfig, identity, reusable_episode
+from .hero_v2 import HeroConfig, identity, reusable_episode, validate_resume_identity
 
 
 def config(gpus=8):
@@ -105,3 +106,16 @@ def test_completed_episode_reuse_requires_same_policy_controller_and_unchanged_t
     row['action_token_limit']=32;result.write_text(json.dumps(row));tokens.write_bytes(b'changed bytes')
     with pytest.raises(ValueError,match='tokens changed'):
         reusable_episode(result,spec,cfg)
+
+
+def test_reviewed_source_migration_preserves_every_other_identity_field():
+    original=config();saved=identity(original)
+    current=replace(original,source_sha256='b'*64,defer_native_logs=True)
+    with pytest.raises(ValueError,match='reviewed source'):
+        validate_resume_identity(saved,current)
+    current=replace(current,accepted_resume_sources=('a'*64,))
+    validate_resume_identity(saved,current)
+    validate_resume_identity(identity(current),current)
+    for key in saved.keys()-{'source_sha256'}:
+        with pytest.raises(ValueError,match='cannot change'):
+            validate_resume_identity(saved | {key:'modified'},current)

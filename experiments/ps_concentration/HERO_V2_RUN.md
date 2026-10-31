@@ -29,3 +29,5 @@ python -m pytest experiments/ps_concentration/test_hero_v2.py experiments/ps_con
 ```
 
 No separate GPU smoke or baseline evaluation preceded the real run. Speed,peak memory and KL overhead must be measured from run artifacts; five minutes/update remains a target.
+
+The optional defer_native_logs setting buffers intermediate native game.json writes until finalization,while retaining every in-memory turn and existing incremental token logs. Interruption forces a flush before scoring. Tests compare every final byte and response count against the pinned native TurnLogger,including forced partial flushes and concurrent episodes. A source-only checkpoint migration requires accepted_resume_sources to explicitly list the reviewed previous source digest; every other saved identity field must match. These settings change logging and implementation provenance,not the game,prompt,reward,loss or optimizer schedule.

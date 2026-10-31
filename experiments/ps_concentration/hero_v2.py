@@ -56,6 +56,8 @@ class HeroConfig:
     export_interval: int = 16
     wandb_id: str = 'rng-4b-ps-grpo-s11-hero-v2-a1'
     revision: str = '768f209d9ea81521153ed38c47d515654e938aea'
+    defer_native_logs: bool = False
+    accepted_resume_sources: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.gpus not in (4, 8) or self.boards != 16 or self.group_size != 8:
@@ -68,6 +70,8 @@ class HeroConfig:
             raise ValueError('Every trainer needs complete groups and a finite answer budget')
         if min(self.learning_rate,self.kl_coefficient,self.entropy_coefficient,self.denominator) <= 0:
             raise ValueError('Learning rate,KL,entropy and denominator must be positive')
+        if type(self.defer_native_logs) is not bool or any(len(value)!=64 for value in self.accepted_resume_sources):
+            raise ValueError('Logging mode must be boolean and reviewed resume sources must be SHA256 digests')
 
     @property
     def batch_size(self):
@@ -143,6 +147,16 @@ def identity(config):
         backend='FA4-PS native-effective BF16 teacher; independent vLLM actors',
         rollout_importance_correction='One fresh epoch,tokenwise PPO ratio clipping using actual native rollout logps',
         native_teacher_strict_parity_proven=False)
+
+
+def validate_resume_identity(saved, config):
+    expected = identity(config)
+    if saved == expected:
+        return
+    if saved.get('source_sha256') not in config.accepted_resume_sources:
+        raise ValueError('Checkpoint source differs without an explicitly reviewed source migration')
+    if saved | dict(source_sha256=expected['source_sha256']) != expected:
+        raise ValueError('Source migration cannot change any model/controller/objective/optimizer identity field')
 
 
 def specs(config, update, permutation):
@@ -223,7 +237,8 @@ async def actor_main(config, rank):
                 thinking_token_limit=config.thinking_token_limit,
                 action_token_limit=config.action_token_limit,
                 thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n',
-                greedy=False, context_exhaustion_reward=-1., compress_native=True),
+                greedy=False, context_exhaustion_reward=-1., compress_native=True,
+                defer_native_logs=config.defer_native_logs),
             backward=False, policy_version=version)
             await runner.release()
         report['episodes'].extend(reused)
@@ -256,7 +271,12 @@ def trainer_main(config, rank, port):
     latest = root / 'checkpoints/latest.pt'
     if latest.exists():
         state = torch.load(latest, map_location='cpu', weights_only=True)
-        assert state['identity'] == identity(config)
+        validate_resume_identity(state['identity'], config)
+        if state['identity'] != identity(config):
+            write(root / f'source-migration-{os.environ["SLURM_JOB_ID"]}-{rank}.json', dict(
+                policy_version=state['policy_version'], old_identity=state['identity'],
+                new_identity=identity(config), approved_sources=config.accepted_resume_sources,
+                scope='Resume identical model/optimizer/RNG; only reviewed implementation source changes'))
         policy.load_state_dict(state['model'], strict=True)
         optimizer.load_state_dict(state['optimizer'])
         for values in optimizer.state.values():

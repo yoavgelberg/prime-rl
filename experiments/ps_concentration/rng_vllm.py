@@ -21,17 +21,19 @@ from .overlap_config import BoardProtocol
 
 class GameCohort:
     compress_native = False
+    defer_native_logs = False
 
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
                  context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8,
                  thinking_token_limit=None, action_token_limit=None, thinking_budget_transition=None,
-                 compress_native=False):
+                 compress_native=False, defer_native_logs=False):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
         self.thinking_token_limit = thinking_token_limit
         self.compress_native = compress_native
+        self.defer_native_logs = defer_native_logs
         self.board = BoardProtocol(rows=rows, cols=cols, num_cards=num_cards, max_responses=max_responses)
         if self.board.cols != 4 and (not greedy or attention != 'ps'):
             raise ValueError('The larger board is reserved for greedy PS evaluation')
@@ -63,6 +65,9 @@ class GameCohort:
         sys.modules['model_presets'] = shim
         from modes import single_normal
         from common import prompts
+        from common.turn_logger import TurnLogger
+        from .native_logging import buffered_logger
+        single_normal.TurnLogger = buffered_logger(TurnLogger, state) if defer_native_logs else TurnLogger
         single_normal.make_client = shim.make_client
         prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
 Keep your thoughts brief and concise. Once you have chosen your next move, finish your reasoning.
@@ -118,9 +123,13 @@ Do not continue reasoning after </think> or start another thinking block.
             except TranscriptLimit as error:
                 censored, reason = True, str(error)
                 chat.exhaust()
+            finally:
+                if self.defer_native_logs and getattr(self.state, 'logger', None) is not None:
+                    self.state.logger.flush_pending()
             native = json.loads((folder / 'native/game.json').read_text())
             row = dict(score_prefix(native, self.max_responses), **spec)
             row.update(censored=censored, resource_limit_reason=reason, greedy=self.greedy)
+            row['native_intermediate_full_json_flushes_deferred'] = self.defer_native_logs
             if native['config']['total_pairs'] != self.board.rows * self.board.cols // 2:
                 raise ValueError('The native board differs from its evaluation protocol')
             row.update(self.board.identity())
