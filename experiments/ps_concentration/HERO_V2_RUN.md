@@ -49,3 +49,11 @@ python -m experiments.ps_concentration.hero_validation_plan --run-dir RUN --outp
 The plan launches no model. It fixes original full/PS controls and PS candidates every16updates through128,all on the reserved128validation boards,with four- and eight-GPU command layouts. Export paths may be prepared before exports exist; preserve and verify those files before execution. Run evaluations only after training and its workers finish. Selection uses the highest validation efficiency reward pairs/8 minus responses/96,with earlier updates winning ties; training error penalties remain separately reported. The original checkpoint remains eligible.
 
 The existing rng_select and rng_final_plan CLIs accept this hero plan. They validate the nested hero training identity and the current128-thinking/32-answer controller,without presenting the shared inference RunConfig as the training algorithm. Final report training-episode counts derive from the saved global batch128. Its efficiency curve uses the unshaped efficiency reward; hero_report additionally plots the reward including error penalties. Native RNG score is pairs found. Greedy controls using this final controller remain necessary even when earlier unrestricted-thinking baselines were strong.
+
+Verify each scheduled BF16 candidate while its matching FP32 snapshot is still available:
+
+```bash
+python -m experiments.ps_concentration.hero_exports --checkpoint RUN/checkpoints/latest.pt --policy NODE_POLICY_DIR --output RUN/export-catalog/policy-0016.json
+```
+
+This CPU command compares every effective BF16 parameter,including tied-weight handling,against the saved FP32 masters and records file hashes. It checks tokenizer vocabulary,native chat template,special tokens,architecture and unchanged RoPE/context settings. It supplies the original reference generation_config.json when that standalone export lacks it. The experiment.json marker must exist and both snapshot and candidate must have the same policy version. Receipts belong outside the export directory. This verifies an inference artifact; it runs no model,restores no optimizer and selects no checkpoint. Node-local weights still need preservation before releasing the allocation.
