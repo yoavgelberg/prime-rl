@@ -239,6 +239,8 @@ def setup_wandb(config):
 def log_metrics(monitor, prefix, metrics, version):
     values = {f'{prefix}/{name}': value for name, value in metrics.items()
               if isinstance(value, (int, float, bool))}
+    if 'mean_return' in metrics:
+        values[f'{prefix}/avg_reward'] = metrics['mean_return']
     values['train/update'] = version
     values['train/episodes'] = version * 64
     monitor.log(values)
