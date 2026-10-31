@@ -50,6 +50,10 @@ def prepare_final_plan(validation_plan, run, selection_path, output, *, gpus, va
         if include_report:
             conditions.append(dict(name=name, policy=policy, training_seed=config.seed if policy == 'PS RL' else None,
                 attention=attention, window=effective_window, split=split, greedy=True, expected_boards=count,
+                policy_version=selected['update'] if policy == 'PS RL' else 0,
+                policy_identity=str(Path(checkpoint).resolve()) if policy == 'PS RL' else config.revision,
+                controller={key: current[key] for key in
+                    ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')},
                 episodes=str(summary.parent / 'episodes.jsonl'), summary=str(summary)))
         return name
 
@@ -70,6 +74,8 @@ def prepare_final_plan(validation_plan, run, selection_path, output, *, gpus, va
             split='intervention', count=512, include_report=False)
     report = dict(conditions=conditions,
         comparisons=[dict(treatment=selected_ps, sliding_control=base_ps, full_control=base_full)],
+        checkpoint_selection=dict(path=str(selection_path),
+            sha256=hashlib.sha256(selection_path.read_bytes()).hexdigest()),
         training_runs=[dict(run_dir=str(run), training_seed=config.seed,
             validation_summaries=[row['summary'] for row in selected['candidates']])],
         full_rl_was_required=selected['full_context_matched_fraction'] < .8,

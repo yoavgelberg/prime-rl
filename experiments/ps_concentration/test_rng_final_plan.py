@@ -48,6 +48,11 @@ def test_final_plan_preserves_controller_reserved_splits_and_selection(selection
     assert report['training_runs'][0]['validation_summaries'] == [
         str(tmp_path / name / 'evaluation/validation/summary.json') for name in ('ps-0', 'ps-16', 'ps-128')]
     assert report['comparisons'][0]['sliding_control'] == 'base-ps-test'
+    for entry in report['conditions']:
+        assert entry['policy_version'] == (16 if entry['policy'] == 'PS RL' else 0)
+        assert entry['controller']['thinking_token_limit'] == 128
+        assert entry['controller']['action_token_limit'] is None
+    assert report['checkpoint_selection']['path'] == str(selection)
     assert result == prepare_final_plan(plan, run, selection, output, gpus=gpus, validation_gpus=4)
     assert not (output / 'selected-ps-test' / 'evaluation').exists()
 

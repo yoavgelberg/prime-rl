@@ -73,6 +73,10 @@ def load_condition(entry, *, allow_partial=False):
         raise ValueError('The final comparison requires greedy evaluation, never sampled training trajectories')
     board, standard = board_protocol(entry['split']).identity(), BoardProtocol().identity()
     for row in rows:
+        if any(key in entry and row.get(key) != entry[key] for key in ('policy_version', 'policy_identity')):
+            raise ValueError('An evaluation condition contains a different checkpoint identity')
+        if any(key not in row or row[key] != value for key, value in entry.get('controller', {}).items()):
+            raise ValueError('An evaluation condition contains a different generation controller')
         if any(row.get(key, standard[key]) != value for key, value in board.items()):
             raise ValueError('An evaluation condition mixes board sizes or attempt limits')
         actual = outcome_reward(row, row.get('max_responses', 96), -1.)
@@ -85,6 +89,8 @@ def load_condition(entry, *, allow_partial=False):
         row['response_count'] if row['done'] else row.get('max_responses', 96) for row in rows]))
     if entry.get('summary'):
         summary = json.loads(Path(entry['summary']).read_text())
+        if any(key in entry and summary.get(key) != entry[key] for key in ('policy_version', 'policy_identity')):
+            raise ValueError('An evaluation summary belongs to a different checkpoint identity')
         if (summary['episodes'] != len(rows) or summary['attention'] != entry['attention']
                 or summary['window'] != entry['window']
                 or any(summary.get(key, standard[key]) != value for key, value in board.items())):
@@ -179,10 +185,29 @@ def summarize_manifest(manifest, *, allow_partial=False):
         summary = json.loads(Path(entry['summary']).read_text())
         interventions.append(dict(entry, result=summary))
     accounting = json.loads(Path(manifest['allocation_accounting']).read_text()) if manifest.get('allocation_accounting') else None
+    qualification = None
+    if manifest.get('checkpoint_selection'):
+        source = manifest['checkpoint_selection']
+        data = Path(source['path']).read_bytes()
+        if hashlib.sha256(data).hexdigest() != source['sha256']:
+            raise ValueError('The validation selection receipt changed after final evaluation preparation')
+        selected = json.loads(data)
+        if selected['split'] != 'validation' or selected['attention'] != 'ps' or selected['episodes'] != 128:
+            raise ValueError('Deferred qualification requires the complete PS validation selection')
+        full = selected['full_context_matched_fraction']
+        gap = selected['full_minus_base_ps_matched_fraction']
+        status = 'GO' if full >= .8 and gap >= .1 else 'HOLD'
+        if selected['competence_and_forgetting_status'] != status:
+            raise ValueError('Deferred qualification status disagrees with its exact gate values')
+        qualification = dict(status=status, full_context_matched_fraction=full,
+            full_minus_base_ps_matched_fraction=gap, competence_threshold=.8, forgetting_threshold=.1,
+            selected_update=selected['update'], selected_validation_return=selected['validation_return'],
+            episodes=128, split='validation', selection_receipt=source,
+            scope='Deferred original-policy competence and forgetting qualification; not a final-test success claim')
     return dict(task='Native RNG-Bench textual Matching Pairs 4x4; efficiency reward pairs/8-attempts/96. '
         'Size generalization: parameter-scaled 4x8, eight ranks with four copies each, reward pairs/16-attempts/192.',
         conditions=conditions, paired_comparisons=comparisons, training_seed_summaries=aggregate,
-        interventions=interventions, allocation_accounting=accounting,
+        interventions=interventions, allocation_accounting=accounting, deferred_qualification=qualification,
         accounting_scope=manifest.get('accounting_scope', 'Explicit allocations supplied in the accounting artifact'),
         full_rl_was_required=manifest.get('full_rl_was_required', False),
         interpretation='Base-control comparisons use an untrained checkpoint and do not claim a trained Full RL comparison')
@@ -233,6 +258,14 @@ def save_tables(result, output):
               'training-seed-summary.csv reports means and sample standard deviations across independent training seeds for each metric. Undefined metrics retain their number of defined training runs. Different board sets, including the 512-board test and 128-board window sweep, remain separate.', '',
               result['interpretation'], '',
               'Paired intervals below use 10,000 resamples over board seeds within a fixed training seed. Training-seed standard deviations describe independent training runs; episode counts are not training replication.', '']
+    if result.get('deferred_qualification') is not None:
+        gate = result['deferred_qualification']
+        lines += [f'Deferred qualification: **{gate["status"]}** on {gate["episodes"]} validation boards. '
+            f'Original full-context matched fraction {gate["full_context_matched_fraction"]:.6f} '
+            f'(threshold ≥{gate["competence_threshold"]:.2f}); full minus original PS matched-fraction gap '
+            f'{gate["full_minus_base_ps_matched_fraction"]:.6f} (threshold ≥{gate["forgetting_threshold"]:.2f}). '
+            f'Selected update {gate["selected_update"]}, validation return {gate["selected_validation_return"]:.6f}. '
+            'This qualification is separate from final-test results.', '']
     for row in result['paired_comparisons']:
         lines.append(f'- {row["treatment"]} minus {row["sliding_control"]}: {row["mean_difference"]:.4f}, '
             f'95% board-bootstrap interval {row["ci95"]}; full-context gap {row["full_context_gap"]:.4f}; recovery {row["recovery"]}.')

@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 
 import pytest
@@ -138,6 +139,55 @@ def condition(tmp_path, rows, **kwargs):
     path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
     return dict(name='trained', policy='PS RL', training_seed=11, split='test', attention='ps',
         window=1024, greedy=True, episodes=str(path), expected_boards=4) | kwargs
+
+
+@pytest.mark.parametrize('field,expected,actual', [
+    ('policy_version', 16, 0),
+    ('policy_identity', 'selected-policy', 'another-policy'),
+    ('thinking_token_limit', 128, 64),
+    ('action_token_limit', None, 64),
+    ('thinking_budget_transition', '\n\nOkay, time to give the answer.</think>\n\n', None),
+])
+def test_final_report_rejects_a_mixed_checkpoint_or_controller(tmp_path, field, expected, actual):
+    rows = episodes()
+    for row in rows:
+        row[field] = expected
+    identity = {field: expected} if field.startswith('policy_') else dict(controller={field: expected})
+    entry = condition(tmp_path, rows, **identity)
+    load_condition(entry)
+    rows[1][field] = actual
+    condition(tmp_path, rows)
+    with pytest.raises(ValueError, match='different checkpoint|different generation controller'):
+        load_condition(entry)
+
+
+def test_final_report_requires_an_explicit_uncapped_action_controller(tmp_path):
+    entry = condition(tmp_path, episodes(), controller=dict(action_token_limit=None))
+    with pytest.raises(ValueError, match='different generation controller'):
+        load_condition(entry)
+
+
+@pytest.mark.parametrize('full,gap,status', [(1., .5, 'GO'), (.79, .5, 'HOLD'), (1., .09, 'HOLD')])
+def test_report_prints_exact_deferred_qualification_gates_and_locks_receipt(tmp_path, full, gap, status):
+    selection = tmp_path / 'selected.json'
+    selected = dict(split='validation', attention='ps', episodes=128,
+        full_context_matched_fraction=full, full_minus_base_ps_matched_fraction=gap,
+        competence_and_forgetting_status=status, update=16, validation_return=.5)
+    selection.write_text(json.dumps(selected))
+    manifest = dict(conditions=[], checkpoint_selection=dict(path=str(selection),
+        sha256=hashlib.sha256(selection.read_bytes()).hexdigest()))
+    result = summarize_manifest(manifest)
+    gate = result['deferred_qualification']
+    assert gate['status'] == status and gate['full_context_matched_fraction'] == full
+    assert gate['full_minus_base_ps_matched_fraction'] == gap
+    output = tmp_path / 'report'
+    save_tables(result, output)
+    text = (output / 'README.md').read_text()
+    assert f'**{status}**' in text and f'{full:.6f}' in text and f'{gap:.6f}' in text
+    assert 'separate from final-test results' in text
+    selection.write_text(json.dumps(selected | dict(update=128)))
+    with pytest.raises(ValueError, match='receipt changed'):
+        summarize_manifest(manifest)
 
 
 def test_paired_intervals_preserve_board_pairing_not_episode_order():
