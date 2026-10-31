@@ -48,19 +48,24 @@ def test_board_groups_and_generation_rngs_survive_physical_layout_changes(tmp_pa
 def test_engine_memory_and_position_configuration(tmp_path):
     cfg = config(tmp_path)
     ps = driver.engine_options(cfg)
-    assert ps['max_num_seqs'] == 16
+    assert ps['max_num_seqs'] == 4
+    assert ps['kv_cache_memory_bytes'] == 2 * 1024**3
+    assert ps['cudagraph_capture_sizes'] == [1, 2, 4]
     assert ps['additional_config']['ps_streaming']['max_requests'] == 4
     assert ps['additional_config']['ps_streaming']['loss_denominator'] == 26624
     assert ps['additional_config']['ps_streaming']['weight_gradient_backend'] == 'cublas'
     assert ps['hf_overrides'] == dict(use_sliding_window=True, sliding_window=1024)
     assert 'rope_scaling' not in ps['hf_overrides'] and 'max_position_embeddings' not in ps['hf_overrides']
-    full = driver.engine_options(replace(cfg, evaluation_concurrency=4), attention='full')
+    evaluation = driver.engine_options(cfg, evaluation=True)
+    assert evaluation['max_num_seqs'] == 16
+    assert evaluation['kv_cache_memory_bytes'] > ps['kv_cache_memory_bytes']
+    full = driver.engine_options(replace(cfg, evaluation_concurrency=4), attention='full', evaluation=True)
     assert full['kv_cache_memory_bytes'] < 145 * 1024**3
     assert full['attention_backend'] == 'CUSTOM'
     assert full['hf_overrides']['sliding_window'] == cfg.transcript_cap
     assert full['additional_config']['ps_streaming']['window'] == cfg.transcript_cap
     with pytest.raises(ValueError, match='four live'):
-        driver.engine_options(cfg, attention='full')
+        driver.engine_options(cfg, attention='full', evaluation=True)
 
 
 def test_larger_split_doubles_cards_and_attempts_without_changing_training(tmp_path):

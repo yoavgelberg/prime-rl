@@ -37,7 +37,7 @@ def append_json(path, value):
 
 def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False):
     stream = config.stream()
-    maximum = config.evaluation_concurrency
+    maximum = config.evaluation_concurrency if evaluation else config.concurrency
     hf = json.loads((Path(config.model) / 'config.json').read_text())
     head = hf.get('head_dim', hf['hidden_size'] // hf['num_attention_heads'])
     bytes_per_token = hf['num_hidden_layers'] * hf['num_key_value_heads'] * head * 4
