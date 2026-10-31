@@ -97,6 +97,17 @@ Probabilities are Monte Carlo estimates at temperature.6, including newly sample
 
 The optional `rng_intervention_states --boundary first_coordinate` retains the earlier action-cursor diagnostic. It conditions on already generated current-turn thinking and cannot establish that earlier text carried memory across turns. Such results can report local causal text use at the action cursor, while `causal_textual_memory_established` remains false. Do not combine the two boundaries in a primary intervention result.
 
+After deferred validation selection, prepare the final commands and report inputs with:
+
+```bash
+python -m experiments.ps_concentration.rng_final_plan \
+  --validation-plan POSTTRAINING_PLAN.json --run-dir TRAINING_RUN \
+  --selection TRAINING_RUN/selected-checkpoint.json --output FINAL_EVALUATION_DIR \
+  --validation-gpus 4 --gpus 8
+```
+
+This CPU command rechecks all prespecified validation results and the selection receipt before writing any files. `--validation-gpus` identifies the layout that produced validation; `--gpus` chooses the available final evaluation layout. The resulting plan covers the512-board original/selected full and PS comparisons, the first128-board window sweep,256 larger boards, and512 separate intervention collection boards. The report manifest includes all deferred PS validation points in checkpoint order. Selection remains fixed before any final test. If update0 wins validation, final commands reuse the original checkpoint without a trained-checkpoint flag or PS RL label; the two duplicate main comparisons and trained-policy intervention collection are omitted. No model is launched by this preparation command. Run GPU commands only after training has ended, the campaign lock is held, and exported weights are verified; the intervention collection still requires subsequent qualification, cold-branch execution and likelihood-validity checks.
+
 Reports verify the exact reserved board seed set and group training-seed statistics by board-set hash as well as policy, attention, window and split. The512-board final test and first128-board window sweep therefore stay separate even atW1024. `main-comparison.csv`, `window-sweep.csv` and `size-generalization.csv` identify each scope; window curves connect only identical board sets and label their board counts. `training-seed-summary.csv` reports per-seed means and sample standard deviations for task, cost and reveal-age utilization metrics, with the number of defined training runs for every metric. Empty utilization bins and undefined completed-only attempt counts remain undefined. One seed has no training-variability estimate.
 
 The `larger` split is evaluation-only: 256 held-out seeds3000000–3000255 on a4×8 board with32 cards, eight distinct ranks and four cards of every rank, with192 attempted responses. It retains the selected PS window, the native262144-token transcript ceiling, the same128-token thinking budget and11-token forced transition, and the identical system prompt; board dimensions change only the native observations. This is a parameter-scaled RNG-Bench task, and additional partners can make some decisions easier. The effective board parameters are saved in `evaluation-protocol.json` and episode records. Use a `larger` report condition with `expected_boards:256`; `size-generalization.csv` reports pairs/16 separately from the4×4 main table. Resource censors remain explicit rather than becoming unobserved192-attempt failures. Training remains4×4 with96 attempts and fixed gradient denominator26624.
