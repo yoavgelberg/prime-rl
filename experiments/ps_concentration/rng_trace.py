@@ -13,7 +13,8 @@ def export(record_path, game_path, tokenizer, output):
     record_path, game_path, output = Path(record_path), Path(game_path), Path(output)
     with gzip.open(record_path, 'rt') as handle:
         record = json.load(handle)
-    game = json.loads(game_path.read_text())
+    with (gzip.open if Path(game_path).suffix == '.gz' else open)(Path(game_path), 'rt') as handle:
+        game = json.load(handle)
     size = len(record['tokens'])
     assert record['positions'] == list(range(size))
     assert size == len(record['roles']) == len(record['loss_mask']) == len(record['old_logps'])

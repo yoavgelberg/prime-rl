@@ -343,7 +343,8 @@ def main():
                     or state['retained_token_ids'] != [record['tokens'][position] for position in positions]
                     or state['retained_roles'] != [record['roles'][position] for position in positions]):
                 raise ValueError('Cold branches differ from the exact immutable prefix and retained original suffix')
-            game = json.loads(Path(state['native_game_json']).read_text())
+            with (gzip.open if Path(state['native_game_json']).suffix == '.gz' else open)(Path(state['native_game_json']), 'rt') as handle:
+                game = json.load(handle)
             environment = replay_state(state, game, env_type, invalid_type)
             turn = record['turns'][state['response_index']]
             row['streaming_parity'] = audit_streaming(base, record, state)

@@ -20,14 +20,18 @@ from .overlap_config import BoardProtocol
 
 
 class GameCohort:
+    compress_native = False
+
     def __init__(self, *, model, source, output, specs, rank, attention='ps', window=1024,
                  transcript_cap=262144, max_responses=96, temperature=.6, greedy=False,
                  context_exhaustion_reward=-1., collect_cuda_metrics=True, rows=4, cols=4, num_cards=8,
-                 thinking_token_limit=None, action_token_limit=None, thinking_budget_transition=None):
+                 thinking_token_limit=None, action_token_limit=None, thinking_budget_transition=None,
+                 compress_native=False):
         self.rank, self.attention, self.window = rank, attention, window
         self.temperature, self.greedy = temperature, greedy
         self.transcript_cap, self.max_responses = transcript_cap, max_responses
         self.thinking_token_limit = thinking_token_limit
+        self.compress_native = compress_native
         self.board = BoardProtocol(rows=rows, cols=cols, num_cards=num_cards, max_responses=max_responses)
         if self.board.cols != 4 and (not greedy or attention != 'ps'):
             raise ValueError('The larger board is reserved for greedy PS evaluation')
@@ -137,9 +141,16 @@ Do not continue reasoning after </think> or start another thinking block.
                 seconds=time.perf_counter() - chat.started, engine='vllm-persistent-game')
             chat.finish()
             record = dict(chat.record(), **row)
+            native_path = folder / 'native/game.json'
+            if self.compress_native:
+                compressed = native_path.with_suffix('.json.gz')
+                with gzip.open(compressed, 'wt', compresslevel=1) as handle:
+                    json.dump(native, handle)
+                native_path.unlink()
+                native_path = compressed
             record.update(attention=self.attention, window=self.window,
                 temperature=self.temperature, top_p=1., top_k=-1,
-                native_game_json=str(folder / 'native/game.json'),
+                native_game_json=str(native_path),
                 logprob_definition='Unfiltered softmax at recorded temperature; greedy choices are evaluation only')
             if not all((value is not None) == keep for value, keep in zip(
                     record['old_tempered_logps'], record['loss_mask'], strict=True)):
@@ -156,7 +167,9 @@ Do not continue reasoning after </think> or start another thinking block.
             temporary.replace(folder / 'tokens.json.gz')
             row.update(token_record=str(folder / 'tokens.json.gz'),
                 token_record_sha256=hashlib.sha256((folder / 'tokens.json.gz').read_bytes()).hexdigest())
-            (folder / 'result.json').write_text(json.dumps(row, indent=2) + '\n')
+            temporary = folder / 'result.json.tmp'
+            temporary.write_text(json.dumps(row, indent=2) + '\n')
+            temporary.replace(folder / 'result.json')
             return row
         except BaseException as error:
             chat.finish(error=error)

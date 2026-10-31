@@ -121,7 +121,8 @@ def analyze_condition(condition, tokenizer, *, examples=None):
             with gzip.open(token_path, 'rt') as handle:
                 record = json.load(handle)
             game_path = record['native_game_json']
-            game = json.loads(Path(game_path).read_text())
+            with (gzip.open if Path(game_path).suffix == '.gz' else open)(Path(game_path), 'rt') as handle:
+                game = json.load(handle)
             values = known_match_decisions(record, game, tokenizer)
             memory = dict(token_record_sha256=row['token_record_sha256'], analysis_version=ANALYSIS_VERSION, decisions=values,
                 known_match=summarize(values), scope='Latest direct environment reveal at original action-query position; notes do not reset age')

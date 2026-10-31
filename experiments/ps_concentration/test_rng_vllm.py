@@ -1,5 +1,6 @@
 import gzip
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,8 @@ from .rng_vllm import GameCohort
 
 
 @pytest.mark.parametrize('board', [BoardProtocol(), BoardProtocol(cols=8, max_responses=192)])
-def test_native_result_saves_evaluation_identity_and_actual_board_denominator(tmp_path, board):
+@pytest.mark.parametrize('compress', [False, True])
+def test_native_result_saves_evaluation_identity_and_actual_board_denominator(tmp_path, board, compress, monkeypatch):
     subject = GameCohort.__new__(GameCohort)
     identity = dict(board_seed=1100000, episode_id='evaluation', greedy=True,
                     attention='ps', window=1024, **board.identity())
@@ -17,6 +19,7 @@ def test_native_result_saves_evaluation_identity_and_actual_board_denominator(tm
     subject.attention, subject.window, subject.temperature, subject.greedy = 'ps', 1024, .6, True
     subject.source, subject.state, subject.device = tmp_path, SimpleNamespace(), None
     subject.context_exhaustion_reward = -1.
+    subject.compress_native = compress
     subject.paths, subject.specs = {'evaluation':tmp_path}, {'evaluation':identity}
     chat = SimpleNamespace(entropy_tokens=4, entropy_sum=6., old_tempered_logps=[-.5] * 4,
         generated_tokens=4, tokens=[1, 2, 3, 4], started=0.,
@@ -37,9 +40,25 @@ def test_native_result_saves_evaluation_identity_and_actual_board_denominator(tm
         return dict(score=1)
 
     subject.run_one_game = native_game
+    original = Path.write_text
+    publications = []
+
+    def publish(path, data, *args, **kwargs):
+        assert path.name != 'result.json', 'Concurrent readers must never observe a partial final result'
+        if path.name == 'result.json.tmp':
+            assert not path.with_suffix('').exists()
+            publications.append(path)
+        return original(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'write_text', publish)
     row = subject._play('evaluation')
+    assert publications and json.loads((tmp_path/'result.json').read_text()) == row
     assert row['training_return'] == pytest.approx(1 / identity['total_pairs'] - 2 / board.max_responses)
     assert all(row[key] == value for key, value in identity.items())
     with gzip.open(row['token_record'], 'rt') as handle:
         record = json.load(handle)
     assert record['total_pairs'] == identity['total_pairs'] and record['greedy'] is True
+    opener = gzip.open if compress else open
+    with opener(record['native_game_json'], 'rt') as handle:
+        assert json.load(handle)['config']['ground_truth_text'] == 'pinned board'
+    assert (tmp_path / 'native/game.json').exists() == (not compress)

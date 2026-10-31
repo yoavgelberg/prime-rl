@@ -271,7 +271,8 @@ def main():
         with gzip.open(path, 'rt') as handle:
             record = json.load(handle)
         game_path = Path(record['native_game_json'])
-        game = json.loads(game_path.read_text())
+        with (gzip.open if Path(game_path).suffix == '.gz' else open)(Path(game_path), 'rt') as handle:
+            game = json.load(handle)
         candidates = collect_states(record, game, tokenizer, maximum=args.maximum - len(states),
                                     manual=manual.get(row['board_seed']), boundary=args.boundary)
         for state in candidates:
