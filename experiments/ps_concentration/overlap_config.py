@@ -73,7 +73,7 @@ class RunConfig:
 
     def stream(self):
         return StreamConfig(window=self.window, chunk_tokens=1024, ring_tokens=1024,
-            max_requests=self.concurrency, tail_block_tokens=16384, fp32_attention=True,
+            max_requests=self.concurrency, tail_block_tokens=8192, fp32_attention=True,
             joint_qkv=True, direct_weight_gradients=True, weight_gradient_backend='cublas',
             compact_kv=True, kv_cache=True, fine_grained_events=True, gpu_head_staging=True,
             stage_scheduling=True, copy_mode='sm', gpu_stages_in_flight=4, backward_batch_tokens=1024,

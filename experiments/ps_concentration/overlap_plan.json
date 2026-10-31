@@ -103,7 +103,7 @@
       "chunk_tokens": 1024,
       "ring_tokens": 1024,
       "max_requests": 4,
-      "tail_block_tokens": 16384,
+      "tail_block_tokens": 8192,
       "fp32_attention": true,
       "joint_qkv": true,
       "direct_weight_gradients": true,
