@@ -35,6 +35,28 @@ def result(index, error=.001):
     return row
 
 
+def test_hero_controller_uses_its_fixed_transition_without_editing_export_metadata(tmp_path):
+    from .hero_protocol import THINKING_TRANSITION
+
+    metadata = dict(variant='hero-v2', policy_version=16, window=1024,
+                    thinking_token_limit=128, action_token_limit=32)
+    original = copy.deepcopy(metadata)
+    protocol = dict(thinking_token_limit=128, action_token_limit=32,
+                    thinking_budget_transition=THINKING_TRANSITION)
+    record = dict(policy_version=16, policy_identity=str(tmp_path.resolve()), greedy=True,
+                  attention='ps', window=1024, board_seed=4000000, **protocol)
+    state = dict(window=1024, board_seed=4000000, continuation_protocol=protocol)
+    module.validate_source(record, state, metadata, tmp_path)
+    assert metadata == original
+    for key, value in [('thinking_token_limit', 64), ('action_token_limit', None),
+                       ('thinking_budget_transition', '\n</think>\n\n')]:
+        wrong = dict(record, **{key: value})
+        with pytest.raises(ValueError, match='thinking controller'):
+            module.validate_source(wrong, state, metadata, tmp_path)
+    with pytest.raises(ValueError, match='declares a different thinking controller'):
+        module.validate_source(record, state, dict(metadata, thinking_budget_transition='different'), tmp_path)
+
+
 def test_textual_memory_conclusion_requires_states_complete_branches_parity_and_effect():
     states = [dict(state_id=str(index), state_boundary='before_thinking') for index in range(32)]
     rows = [result(index) for index in range(32)]

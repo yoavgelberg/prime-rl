@@ -47,7 +47,14 @@ def validate_source(record, state, metadata, checkpoint):
         raise ValueError('Intervention source is not a greedy PS rollout of this exact checkpoint and board')
     keys = ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')
     protocol = {key: record.get(key) for key in keys}
-    if protocol != state['continuation_protocol'] or protocol != {key: metadata.get(key) for key in keys}:
+    expected = {key: metadata.get(key) for key in keys}
+    if metadata.get('variant') == 'hero-v2':
+        from .hero_protocol import THINKING_TRANSITION
+
+        if expected['thinking_budget_transition'] not in (None, THINKING_TRANSITION):
+            raise ValueError('Hero checkpoint declares a different thinking controller')
+        expected['thinking_budget_transition'] = THINKING_TRANSITION
+    if protocol != state['continuation_protocol'] or protocol != expected:
         raise ValueError('Intervention source changed the checkpoint thinking controller')
 
 
