@@ -1,6 +1,6 @@
 """Scientific configuration, fixed seed plans and physical rollout cohorts."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 import hashlib
 import json
@@ -94,6 +94,14 @@ class RunConfig:
                 'BF16 NativeTeacher; approximate when strict parity is HOLD'),
             exploratory_teacher_parity_limits=dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6),
             outcome=asdict(OutcomeConfig()), reward='pairs/8-attempts/96; resource exhaustion -1')
+
+
+def evaluation_gpu_count(config, gpus, *, mode):
+    if gpus is None:
+        return config
+    if mode != 'evaluate':
+        raise ValueError('GPU-count overrides are evaluation-only')
+    return replace(config, gpus=gpus)
 
 
 def permutation(seed):

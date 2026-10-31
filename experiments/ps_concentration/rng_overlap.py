@@ -15,7 +15,7 @@ from prime_rl.orchestrator.ps_games import GameRolloutRunner, worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 
 from .control import handoff_requested
-from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, permutation, protocol_lock, training_specs
+from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, evaluation_gpu_count, permutation, protocol_lock, training_specs
 from .rank_collection import RankCollector
 
 
@@ -130,8 +130,9 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
         started_wall = time.time()
         write_json(accounting, dict(status='started', wall_start=started_wall, gpus=config.gpus,
             episode_ids=[spec['episode_id'] for spec in batch], job=os.environ.get('SLURM_JOB_ID')))
-        report = await runner.collect(FACTORY, worker_options(config, batch, output,
-            attention=attention, greedy=True, board=board), policy_version=policy_version)
+        options = worker_options(config, batch, output, attention=attention, greedy=True, board=board)
+        options.update(compress_native=True, defer_native_logs=True)
+        report = await runner.collect(FACTORY, options, policy_version=policy_version)
         write_json(accounting, dict(status='complete', wall_start=started_wall, wall_end=time.time(),
             gpus=config.gpus, job=os.environ.get('SLURM_JOB_ID'), report=report))
         rows.extend(report['episodes'])
@@ -413,12 +414,14 @@ def main():
     parser.add_argument('--attention', choices=['ps', 'full'], default='ps')
     parser.add_argument('--split', choices=['screening', 'validation', 'test', 'larger', 'intervention'], default='screening')
     parser.add_argument('--checkpoint')
+    parser.add_argument('--gpus', type=int, choices=(1, 2, 4, 8), help='Physical evaluation layout; preserves board seeds and controller')
     parser.add_argument('--competence')
     parser.add_argument('--defer-evaluation', action='store_true', help='Start training without evaluation; evaluate separately when time remains')
     parser.add_argument('--window', type=int, help='Evaluation window sweep; training remains W=1024')
     parser.add_argument('--count', type=int, help='Evaluate the first N fixed split boards, e.g. 128 for window sweeps')
     args = parser.parse_args()
     config = RunConfig(**json.loads(Path(args.config).read_text()))
+    config = evaluation_gpu_count(config, args.gpus, mode=args.mode)
     if args.window is not None:
         config = replace(config, window=args.window)
     if args.mode == 'train' and args.count is not None:

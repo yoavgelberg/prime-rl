@@ -57,3 +57,13 @@ python -m experiments.ps_concentration.hero_exports --checkpoint RUN/checkpoints
 ```
 
 This CPU command compares every effective BF16 parameter,including tied-weight handling,against the saved FP32 masters and records file hashes. It checks tokenizer vocabulary,native chat template,special tokens,architecture and unchanged RoPE/context settings. It supplies the original reference generation_config.json when that standalone export lacks it. The experiment.json marker must exist and both snapshot and candidate must have the same policy version. Receipts belong outside the export directory. This verifies an inference artifact; it runs no model,restores no optimizer and selects no checkpoint. Node-local weights still need preservation before releasing the allocation.
+
+After the complete training budget and worker shutdown,run the deferred performance workflow:
+
+```bash
+python -m experiments.ps_concentration.hero_finish --run-dir RUN --plan VALIDATION_DIR/plan.json --output FINISH_DIR --gpus 8
+```
+
+It requires the completed training state,an idle assigned GPU set,and exact-weight verification receipts for every candidate. It preserves all BF16 candidates on shared storage,checks copied file hashes,runs complete validation,selects a checkpoint,runs the prescribed final conditions,and renders tables,figures and20fixed-order greedy examples. Completed conditions are verified and skipped on resume. A four-GPU continuation uses the same command with --gpus4:the original plan files remain fixed while actual GPU counts are recorded in evaluation protocols and per-cohort accounting. The evaluation-only --gpus override preserves the board seeds,model,controller and attention settings.
+
+Evaluation uses buffered native logging and compressed full histories,as the hero actors do. The final workflow status explicitly leaves causal memory interventions and independent training replication pending. The workflow does not release the allocation or treat performance tables as a textual-memory conclusion.
