@@ -4,6 +4,7 @@ import json
 import pytest
 
 from .rng_report import analyze_condition, load_condition, paired_bootstrap, plots, save_tables, seed_summary, summarize_manifest, training_curve_rows, window_series
+from .test_rng_select import selection_run
 
 
 def test_training_curves_keep_sampled_returns_separate_and_exclude_uncommitted_updates(tmp_path):
@@ -45,6 +46,83 @@ def test_return_curves_reject_partial_batches_and_nonfinite_measurements(tmp_pat
         path.write_text(json.dumps(dict(metrics=base | changed)))
         with pytest.raises(ValueError, match=message):
             training_curve_rows([dict(run_dir=str(tmp_path), training_seed=11)])
+
+
+def deferred_curve_run(plan, run):
+    conditions = json.loads(plan.read_text())['layouts']['4']
+    return dict(run_dir=str(run), training_seed=11,
+                validation_summaries=[entry['summary'] for entry in conditions if entry['attention'] == 'ps'])
+
+
+def test_deferred_validation_curves_read_external_results_without_moving_them(selection_run, tmp_path):
+    plan, run = selection_run
+    entry = deferred_curve_run(plan, run)
+    assert not (run / 'validation').exists()
+    rows = training_curve_rows([entry])
+    assert [row['update'] for row in rows] == [0, 16, 128]
+    assert [row['mean_return'] for row in rows] == pytest.approx([-.5, 2 / 3, 2 / 3])
+    assert all(row['kind'] == 'greedy_validation' for row in rows)
+    output = tmp_path / 'report'
+    output.mkdir()
+    plots(dict(conditions=[]), dict(training_runs=[entry]), output)
+    with (output / 'training-return-curve.csv').open() as handle:
+        saved = list(csv.DictReader(handle))
+    assert [int(row['training_episodes']) for row in saved] == [0, 1024, 8192]
+    assert (output / 'return-vs-training-episodes.png').stat().st_size > 1000
+
+
+@pytest.mark.parametrize('change,message', [
+    ('test_split', 'only PS validation'),
+    ('full_attention', 'only PS validation'),
+    ('controller', 'scientific identities'),
+    ('partial', 'expected 128'),
+    ('checkpoint', 'another checkpoint'),
+    ('episode_controller', 'another generation controller'),
+    ('return', 'differs from its records'),
+    ('future', 'uncommitted checkpoint'),
+    ('duplicate', 'one result per checkpoint'),
+    ('empty', 'cannot be empty'),
+])
+def test_deferred_validation_curves_reject_mixed_or_incomplete_sources(selection_run, change, message):
+    from pathlib import Path
+
+    plan, run = selection_run
+    entry = deferred_curve_run(plan, run)
+    summary = Path(entry['validation_summaries'][-1])
+    path, value = summary, json.loads(summary.read_text())
+    if change == 'test_split':
+        value['split'] = 'test'
+    elif change == 'full_attention':
+        value['attention'] = 'full'
+    elif change == 'controller':
+        path = summary.parent / 'evaluation-protocol.json'
+        value = json.loads(path.read_text())
+        value['config']['thinking_token_limit'] = 64
+    elif change == 'partial':
+        path = summary.parent / 'episodes.jsonl'
+        path.write_text('\n'.join(path.read_text().splitlines()[:-1]) + '\n')
+        path = None
+    elif change in ('checkpoint', 'episode_controller'):
+        path = summary.parent / 'episodes.jsonl'
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        records[0].update(dict(policy_version=16) if change == 'checkpoint' else dict(thinking_token_limit=64))
+        path.write_text(''.join(json.dumps(row) + '\n' for row in records))
+        path = None
+    elif change == 'return':
+        value['mean_return'] = 999
+    elif change == 'future':
+        path = run / 'state.json'
+        value = json.loads(path.read_text()) | dict(policy_version=127)
+    elif change == 'duplicate':
+        entry['validation_summaries'].append(str(summary))
+        path = None
+    elif change == 'empty':
+        entry['validation_summaries'] = []
+        path = None
+    if path is not None:
+        path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match=message):
+        training_curve_rows([entry])
 
 
 def episodes(seed=11, delta=0.):
