@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from .rng_overlap_loss import accept_training_audit
+from .rng_overlap_loss import accept_training_audit, teacher_outliers, zero_kl_outliers
 from prime_rl.trainer.ps_backward.checkpoint import save_pending_gradients
 
 
@@ -43,3 +43,27 @@ def test_initial_identical_reference_has_zero_kl_and_reports_rare_teacher_outlie
     assert not accept_training_audit(audit,rows,False)
     assert not accept_training_audit(dict(audit,mean_abs=.46),rows,True)
     assert not accept_training_audit(dict(audit,max_abs=float('inf')),rows,True)
+
+
+def test_teacher_outlier_exception_requires_every_outlier_to_have_exactly_zero_kl_gradient():
+    record = dict(episode_id='example', tokens=[1,2,3,4,5], loss_mask=[False,True,False,True,True])
+    policy = torch.tensor([-1.,-4.,-2.], requires_grad=True)
+    reference = policy.detach().clone()
+    old = torch.tensor([-1.,-.5,-2.])
+    outliers = teacher_outliers(policy, reference, old, record)
+    assert outliers == [dict(episode_id='example', position=3, token_id=4,
+        policy_logp=-4., reference_logp=-4., rollout_logp=-.5)]
+    audit = dict(status='HOLD',mean_abs=.017,p99=.27,max_abs=3.5,
+        teacher_outlier_count=1,teacher_outliers=outliers)
+    rows = [dict(native_capture_mean_loss_error=1e-8)]
+    assert zero_kl_outliers(audit) and accept_training_audit(audit,rows,True)
+    from .objective import sampled_kl
+    values = sampled_kl(policy, reference)
+    values.sum().backward()
+    assert values[1] == 0 and policy.grad[1] == 0
+    assert not accept_training_audit(audit,rows,False)
+    assert not accept_training_audit(dict(audit,teacher_outlier_count=2),rows,True)
+    assert not accept_training_audit(dict(audit,teacher_outliers=[]),rows,True)
+    bad = [dict(outliers[0],reference_logp=-3.999999999)]
+    assert not accept_training_audit(dict(audit,teacher_outliers=bad),rows,True)
+    assert not accept_training_audit(dict(audit,mean_abs=.04),rows,True)

@@ -15,6 +15,21 @@ from .objective import sampled_kl
 from .policy import load_model
 
 
+def zero_kl_outliers(audit):
+    rows = audit.get('teacher_outliers', [])
+    return (bool(rows) and len(rows) == audit.get('teacher_outlier_count')
+            and all(math.isfinite(row['policy_logp']) and row['policy_logp'] == row['reference_logp']
+                    for row in rows))
+
+
+def teacher_outliers(logps, ref, old, record):
+    indices = ((logps.detach() - old).abs() > 2.).nonzero().flatten().tolist()
+    positions = [index for index, keep in enumerate(record['loss_mask']) if keep] if indices else []
+    return [dict(episode_id=record['episode_id'], position=positions[index],
+        token_id=record['tokens'][positions[index]], policy_logp=float(logps[index].detach()),
+        reference_logp=float(ref[index]), rollout_logp=float(old[index])) for index in indices]
+
+
 def accept_training_audit(audit, records, exploratory):
     native_errors = [row.get('native_capture_mean_loss_error', float('inf')) for row in records]
     if not native_errors or not all(error <= 1e-6 for error in native_errors):
@@ -23,7 +38,7 @@ def accept_training_audit(audit, records, exploratory):
         return True
     return (exploratory and audit['mean_abs'] <= .03 and audit['p99'] <= .35
             and math.isfinite(audit['max_abs'])
-            and (audit['max_abs'] <= 2. or audit.get('initial_policy') is True))
+            and (audit['max_abs'] <= 2. or audit.get('initial_policy') is True or zero_kl_outliers(audit)))
 
 
 def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_checkpoint,
@@ -37,7 +52,7 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
     reference = None if initial_policy else load_model(str(reference_checkpoint), str(policy.device))
     if reference is not None:
         reference.requires_grad_(False)
-    differences, tokens, kl_sum = [], 0, 0.
+    differences, tokens, kl_sum, outliers = [], 0, 0., []
     try:
         for row in records:
             with gzip.open(row['token_record'], 'rt') as handle:
@@ -60,6 +75,7 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
                     loss = coefficient * values.sum() / (outcome_config.denominator * outcome_config.global_batch_size)
                 if not bool(torch.isfinite(loss)):
                     raise ValueError('Reference KL became nonfinite')
+                outliers.extend(teacher_outliers(logps, ref, old, record))
                 local_kl = float(values.detach().sum())
                 loss.backward()
                 del ref, values, loss
@@ -84,6 +100,9 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
     audit['native_capture_max_mean_loss_error'] = max(row.get('native_capture_mean_loss_error', float('inf')) for row in records)
     audit['exploratory_limits'] = dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6)
     audit['initial_zero_kl_outlier_exception'] = initial_policy and audit['max_abs'] > 2.
+    audit['teacher_outlier_count'] = int(np.count_nonzero(differences > 2.))
+    audit['teacher_outliers'] = outliers
+    audit['zero_kl_outlier_exception'] = zero_kl_outliers(audit)
     audit['teacher_kl_approximate'] = audit['status'] != 'GO'
     audit['training_runtime_accepted'] = accept_training_audit(audit, records, allow_numerical_target_miss)
     (output / 'rollout-teacher-parity.json').write_text(json.dumps(audit, indent=2) + '\n')
