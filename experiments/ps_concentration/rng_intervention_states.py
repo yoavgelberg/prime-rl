@@ -12,6 +12,7 @@ from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions
 
 
 ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*(?::|=|->|→|\bis\b)\s*(?:rank\s*)?(\d+)(?!\d)', re.I)
+ASSOCIATION_VERSION = 'explicit-coordinate-rank-v2-whitespace-token-spans'
 
 
 def action_line(text):
@@ -32,6 +33,18 @@ def boundary(tokenizer, tokens, character):
     return low if len(prefix) == character else None
 
 
+def coordinate_span(tokenizer, tokens, text, begin, end):
+    lo = boundary(tokenizer, tokens, begin)
+    while lo is None and begin and text[begin - 1] in ' \t':
+        begin -= 1
+        lo = boundary(tokenizer, tokens, begin)
+    hi = boundary(tokenizer, tokens, end)
+    if lo is None or hi is None:
+        return None
+    surface = tokenizer.decode(tokens[lo:hi], skip_special_tokens=False, clean_up_tokenization_spaces=False)
+    return lo, hi, surface
+
+
 def associations(record, tokenizer, start, end, manual=()):
     notes = []
     position = start
@@ -49,12 +62,15 @@ def associations(record, tokenizer, start, end, manual=()):
             line = text[text.rfind('\n', 0, match.start()) + 1:line_end if line_end >= 0 else len(text)]
             if action_line(line):
                 continue
-            lo, hi = [boundary(tokenizer, tokens, character) for character in match.span(1)]
             coordinate = match[1]
-            if lo is None or hi is None or not re.fullmatch(r'[a-d][A-D]', coordinate):
+            span = coordinate_span(tokenizer, tokens, text, *match.span(1))
+            if span is None or not re.fullmatch(r'[a-d][A-D]', coordinate):
                 continue
-            notes.append(dict(position=coordinate, surface=coordinate, rank=match[2], start=position + lo, end=position + hi,
-                recognition='Explicit generated coordinate:rank, coordinate=rank, coordinate->rank, or coordinate is rank'))
+            lo, hi, surface = span
+            if surface.strip(' \t') != coordinate:
+                continue
+            notes.append(dict(position=coordinate, surface=surface, rank=match[2], start=position + lo, end=position + hi,
+                recognition='Explicit generated coordinate/rank association; adjacent token-bound spaces preserved'))
         position = finish
     for item in manual:
         lo, hi = item['start'], item['end']
@@ -93,6 +109,9 @@ def swap_edits(notes, first, second, record, tokenizer):
             replacement_surface = replacement
         elif replacement in item.get('replacement_surfaces', {}):
             replacement_surface = item['replacement_surfaces'][replacement]
+        elif surface.strip(' \t') == item['position']:
+            left, _, right = surface.partition(item['position'])
+            replacement_surface = left + replacement + right
         elif len(surfaces[replacement]) == 1:
             replacement_surface = next(iter(surfaces[replacement]))
         else:
@@ -100,7 +119,9 @@ def swap_edits(notes, first, second, record, tokenizer):
         if not replacement_surface or '\n' in replacement_surface:
             raise ValueError('A replacement coordinate surface must fit one scratch-work line')
         new = tokenizer.encode(replacement_surface, add_special_tokens=False)
-        if len(new) != len(old) or tokenizer.decode(old, skip_special_tokens=False) != surface:
+        if (len(new) != len(old)
+                or tokenizer.decode(old, skip_special_tokens=False, clean_up_tokenization_spaces=False) != surface
+                or tokenizer.decode(new, skip_special_tokens=False, clean_up_tokenization_spaces=False) != replacement_surface):
             return None
         edits.append(dict(start=lo, end=hi, old=old, new=new, association=item,
                           replacement_position=replacement, replacement_surface=replacement_surface))
@@ -195,6 +216,7 @@ def collect_states(record, game, tokenizer, *, maximum=128, manual=None, boundar
                 retained_roles=[record['roles'][index] for index in positions], qualifying_associations=relevant,
                 recognition=sorted({item['recognition'] for item in relevant}),
                 analysis_version=ANALYSIS_VERSION,
+                association_version=ASSOCIATION_VERSION,
                 state_boundary=boundary,
                 continuation_protocol={key: record.get(key) for key in (
                     'thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')})
@@ -262,6 +284,7 @@ def main():
         for state in states:
             handle.write(json.dumps(state) + '\n')
     result = dict(qualified_states=len(states), testable_states=sum('edits' in state for state in states),
+        association_version=ASSOCIATION_VERSION,
         state_boundary=args.boundary,
         minimum_for_textual_memory_conclusion=32, intervention_branches_executed=False,
         status='COLLECTED' if len(states) >= 32 else 'INSUFFICIENT QUALIFYING STATES',

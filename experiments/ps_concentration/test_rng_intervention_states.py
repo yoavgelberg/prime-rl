@@ -2,8 +2,87 @@ import copy
 
 import pytest
 
-from .rng_intervention_states import apply_edits, associations, collect_states, edit_size
+from .rng_intervention_states import apply_edits, associations, collect_states, edit_size, swap_edits
 from .test_rng_memory_metrics import CharacterTokenizer
+
+
+class SpaceRowTokenizer(CharacterTokenizer):
+    def encode(self, text, **kwargs):
+        tokens, offset = [], 0
+        while offset < len(text):
+            if text[offset] == ' ' and offset + 1 < len(text) and text[offset + 1] in 'abcd':
+                tokens.append(65536 + ord(text[offset + 1]))
+                offset += 2
+            else:
+                tokens.append(ord(text[offset]))
+                offset += 1
+        return tokens
+
+    def decode(self, tokens, **kwargs):
+        return ''.join(' ' + chr(token - 65536) if token >= 65536 else chr(token) for token in tokens)
+
+    def __call__(self, text, **kwargs):
+        tokens = self.encode(text)
+        offsets, start = [], 0
+        for token in tokens:
+            end = start + len(self.decode([token]))
+            offsets.append((start, end))
+            start = end
+        return dict(input_ids=tokens, offset_mapping=offsets)
+
+
+def test_bullet_and_inline_associations_include_only_token_bound_leading_spaces():
+    tokenizer = SpaceRowTokenizer()
+    for text in ('- bA = 0', 'Previously, bA = 0', ' bA=0'):
+        tokens = tokenizer.encode(text)
+        record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+        notes = associations(record, tokenizer, 0, len(tokens))
+        assert len(notes) == 1 and notes[0]['position'] == 'bA'
+        assert notes[0]['surface'] == ' bA'
+        assert tokenizer.decode(tokens[notes[0]['start']:notes[0]['end']]) == ' bA'
+        record['roles'] = ['environment_template'] * len(tokens)
+        assert associations(record, tokenizer, 0, len(tokens)) == []
+
+
+def test_space_bound_coordinate_swap_preserves_whitespace_when_partner_is_not_written():
+    tokenizer = SpaceRowTokenizer()
+    text = '- aA=0'
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    notes = associations(record, tokenizer, 0, len(tokens))
+    edits = swap_edits(notes, 'aA', 'bA', record, tokenizer)
+    assert len(edits) == 1
+    edit = edits[0]
+    assert edit['replacement_surface'] == ' bA'
+    assert len(edit['old']) == len(edit['new']) == 2
+    changed = tokens[:edit['start']] + edit['new'] + tokens[edit['end']:]
+    assert tokenizer.decode(changed) == '- bA=0'
+
+
+def test_token_bound_bullets_allow_equal_swap_and_sham_without_changing_observations():
+    record, game = fixture('- aA=0\n- aB=1\n- aC=2\n- aD=3')
+    tokenizer = SpaceRowTokenizer()
+    text = CharacterTokenizer().decode(record['tokens'])
+    tokens = tokenizer.encode(text)
+    offsets = [0]
+    roles = []
+    for token in tokens:
+        finish = offsets[-1] + len(tokenizer.decode([token]))
+        span_roles = record['roles'][offsets[-1]:finish]
+        assert len(set(span_roles)) == 1
+        roles.append(span_roles[0])
+        offsets.append(finish)
+    record['turns'] = [dict(turn, start=offsets.index(turn['start']), end=offsets.index(turn['end']))
+                       for turn in record['turns']]
+    record.update(tokens=tokens, roles=roles)
+    state, = collect_states(record, game, tokenizer)
+    original = tokenizer.decode(state['retained_token_ids'])
+    changed = apply_edits(state, state['edits'])
+    sham = apply_edits(state, state['sham_edits'])
+    assert tokenizer.decode(changed) == original.replace(' aA=0', ' aB=0').replace(' aB=1', ' aA=1')
+    assert tokenizer.decode(sham) == original.replace(' aC=2', ' aD=2').replace(' aD=3', ' aC=3')
+    assert len(changed) == len(sham) == len(state['retained_token_ids'])
+    assert edit_size(state['edits']) == edit_size(state['sham_edits']) == (4, 2)
 
 
 def fixture(notes='aA=0; aB=1; aC=2; aD=3;', *, notes_in_current_turn=False):

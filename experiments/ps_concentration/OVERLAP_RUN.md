@@ -101,6 +101,8 @@ The `larger` split is evaluation-only: 256 held-out seeds3000000–3000255 on a4
 
 Manual intervention annotations can map an exact sampled-token `surface` (for example `(1,1)`) to a native `position` (for example `aA`) and `rank`. Swaps reuse the corresponding retained surface alias or an explicitly supplied `replacement_surfaces` mapping. Both swap and sham still require equal token lengths and changed-token counts; recorded observations and past action lines remain immutable. Annotation changes only the offline intervention, never the prompt or training reward.
 
+Automatic coordinate/rank recognition allows an adjacent leading space inside the edited token span when the tokenizer joins that space to a coordinate. Swaps preserve the whitespace exactly and retain equal token lengths and changed-token counts. States and collection summaries record the association-recognition version separately from the unchanged direct-reveal-age metric version.
+
 The completed historical sampled baseline has its own CPU-only scorer:
 
 ```bash
