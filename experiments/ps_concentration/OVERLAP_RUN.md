@@ -116,6 +116,8 @@ Manual intervention annotations can map an exact sampled-token `surface` (for ex
 
 Automatic coordinate/rank recognition allows an adjacent leading space inside the edited token span when the tokenizer joins that space to a coordinate. Swaps preserve the whitespace exactly and retain equal token lengths and changed-token counts. States and collection summaries record the association-recognition version separately from the unchanged direct-reveal-age metric version.
 
+The recognizer also accepts explicit parenthetical lists such as `bA(4), cB(4)` and sentences such as `cB is a 4`. These forms occur in sampled training scratch work. They receive the same sampled-role, action-line, original-reveal-age and equal-token edit checks as colon/equality notes. Only the coordinate span is edited; rank values, punctuation and whitespace stay fixed. Incomplete parentheses and coordinates embedded inside words do not qualify. The recognition version records this syntax coverage independently of task scores and training runtime.
+
 The completed historical sampled baseline has its own CPU-only scorer:
 
 ```bash

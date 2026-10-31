@@ -11,8 +11,9 @@ import re
 from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions
 
 
-ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*(?::|=|->|→|\bis\b)\s*(?:rank\s*)?(\d+)(?!\d)', re.I)
-ASSOCIATION_VERSION = 'explicit-coordinate-rank-v2-whitespace-token-spans'
+ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*(?::|=|->|→|\bis\b)\s*(?:a\s+)?(?:rank\s*)?(\d+)(?!\d)', re.I)
+PARENTHETICAL_ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*\(\s*(?:rank\s*)?(\d+)\s*\)', re.I)
+ASSOCIATION_VERSION = 'explicit-coordinate-rank-v3-parentheses-and-articles'
 
 
 def action_line(text):
@@ -57,7 +58,9 @@ def associations(record, tokenizer, start, end, manual=()):
             finish += 1
         tokens = record['tokens'][position:finish]
         text = tokenizer.decode(tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        for match in ASSOCIATION.finditer(text):
+        matches = itertools.chain.from_iterable(pattern.finditer(text)
+            for pattern in (ASSOCIATION, PARENTHETICAL_ASSOCIATION))
+        for match in matches:
             line_end = text.find('\n', match.end())
             line = text[text.rfind('\n', 0, match.start()) + 1:line_end if line_end >= 0 else len(text)]
             if action_line(line):

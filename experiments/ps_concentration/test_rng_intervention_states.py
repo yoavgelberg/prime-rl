@@ -59,6 +59,33 @@ def test_space_bound_coordinate_swap_preserves_whitespace_when_partner_is_not_wr
     assert tokenizer.decode(changed) == '- bA=0'
 
 
+@pytest.mark.parametrize('text', [
+    'Remaining cards: aA(5), bA(4), cB(4), cC(6), bB(0)',
+    'Remaining cards: aA (rank 5), bA (4), cB (4), cC (6), bB (0)',
+    'aA is a 5, bA is a 4, cB is a 4, cC is a 6, bB is a 0',
+])
+def test_explicit_parenthetical_and_article_notes_are_recognized_without_editing_the_rank(text):
+    tokenizer = SpaceRowTokenizer()
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    notes = associations(record, tokenizer, 0, len(tokens))
+    assert [(note['position'], note['rank']) for note in notes] == [
+        ('aA', '5'), ('bA', '4'), ('cB', '4'), ('cC', '6'), ('bB', '0')]
+    edits = swap_edits(notes, 'cB', 'cC', record, tokenizer)
+    changed = tokens[:]
+    for edit in edits:
+        changed[edit['start']:edit['end']] = edit['new']
+    assert tokenizer.decode(changed) == text.replace('cB', 'TEMP').replace('cC', 'cB').replace('TEMP', 'cC')
+    assert len(changed) == len(tokens) and edit_size(edits) == (4, 2)
+
+
+@pytest.mark.parametrize('text', ['Action: bA(4)', 'Action: bA is a 4', 'xbA(4)', 'bA(4', 'bA (unknown)'])
+def test_new_association_syntax_excludes_actions_embedded_coordinates_and_incomplete_notes(text):
+    tokenizer = CharacterTokenizer()
+    tokens = tokenizer.encode(text)
+    assert associations(dict(tokens=tokens, roles=['assistant'] * len(tokens)), tokenizer, 0, len(tokens)) == []
+
+
 def test_token_bound_bullets_allow_equal_swap_and_sham_without_changing_observations():
     record, game = fixture('- aA=0\n- aB=1\n- aC=2\n- aD=3')
     tokenizer = SpaceRowTokenizer()
