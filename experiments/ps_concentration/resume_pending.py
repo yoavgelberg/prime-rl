@@ -2,10 +2,12 @@
 
 import argparse
 import asyncio
+from contextlib import contextmanager
 from dataclasses import asdict
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import time
 
@@ -13,6 +15,20 @@ from prime_rl.orchestrator.ps_games import worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 from .overlap_config import RunConfig, permutation, training_specs
 from .rng_overlap import aggregate_update, lock_run, log_metrics, make_engine, setup_wandb, write_json
+
+
+@contextmanager
+def campaign_lock(path, *, inherited_fd=8):
+    if os.environ.get('PS_OVERLAP_LOCK_HELD') == '1':
+        inherited, target = os.fstat(inherited_fd), path.stat()
+        if (inherited.st_dev, inherited.st_ino) != (target.st_dev, target.st_ino):
+            raise ValueError('Inherited campaign lock points to another file')
+        fcntl.flock(inherited_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    else:
+        with path.open('a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
 
 
 def validate_manifest(config, path):
@@ -111,8 +127,7 @@ def main():
     config = RunConfig(**json.loads(Path(args.config).read_text()))
     validate_manifest(config, args.pending)
     lock = Path(config.output).parent / 'training.lock'
-    with lock.open('a') as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with campaign_lock(lock):
         lock_run(config)
         monitor = setup_wandb(config)
         engine = make_engine(config, attention='ps')

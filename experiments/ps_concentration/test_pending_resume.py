@@ -139,3 +139,21 @@ def test_stale_pending_gradients_cannot_apply_a_second_optimizer_step(monkeypatc
     with pytest.raises(ValueError,match='stale'):
         asyncio.run(resume_pending.resume(config,object(),None,path))
     assert calls==['ps_train_initialize','ps_train_restore']
+
+
+def test_inherited_campaign_lock_remains_held_for_following_training(monkeypatch,tmp_path):
+    import fcntl
+    path=tmp_path/'training.lock'
+    with path.open('a') as owner:
+        fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        monkeypatch.setenv('PS_OVERLAP_LOCK_HELD','1')
+        with resume_pending.campaign_lock(path,inherited_fd=owner.fileno()):
+            pass
+        with path.open('a') as competitor:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(competitor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        other=tmp_path/'other.lock'
+        other.touch()
+        with pytest.raises(ValueError,match='another file'):
+            with resume_pending.campaign_lock(other,inherited_fd=owner.fileno()):
+                pass

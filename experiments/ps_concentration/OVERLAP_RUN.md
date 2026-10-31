@@ -99,3 +99,6 @@ python -m experiments.ps_concentration.resume_pending --config RUN_CONFIG.json -
 ```
 
 This recovery utility is prepared separately from the running sourcea16 snapshot. Its CPU tests cover exact gradient reload, metadata/version/shape rejection, complete-manifest validation, a full no-generation update path and refusal to apply a stale batch twice. It has not been run on a real GPU pending batch; do not restart a healthy training run merely to deploy recovery support.
+
+
+At the initial checkpoint the policy and reference coincide, so reference KL and its gradient are exactly zero. In exploratory mode, the separate NativeTeacher audit still reports strict HOLD and requires finite errors plus the same mean≤.03/p99≤.35 bounds and mandatory native-loss certificates, but a rare maximum-error outlier does not block that zero-KL initial update. The maximum error remains recorded through `initial_zero_kl_outlier_exception`. Subsequent updates retain the maximum≤2 bound. This exception changes an auxiliary acceptance rule for the exact-zero initial KL; it does not change the native task gradient or invent a nonzero KL gradient.

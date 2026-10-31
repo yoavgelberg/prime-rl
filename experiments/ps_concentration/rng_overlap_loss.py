@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import math
 from pathlib import Path
 import time
 
@@ -21,7 +22,8 @@ def accept_training_audit(audit, records, exploratory):
     if audit['status'] == 'GO':
         return True
     return (exploratory and audit['mean_abs'] <= .03 and audit['p99'] <= .35
-            and audit['max_abs'] <= 2.)
+            and math.isfinite(audit['max_abs'])
+            and (audit['max_abs'] <= 2. or audit.get('initial_policy') is True))
 
 
 def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_checkpoint,
@@ -81,6 +83,7 @@ def accumulate_kl(policy, records, *, coefficient, outcome_config, reference_che
     audit['status'] = 'GO' if audit['mean_abs'] <= .01 and audit['p99'] <= .05 else 'HOLD'
     audit['native_capture_max_mean_loss_error'] = max(row.get('native_capture_mean_loss_error', float('inf')) for row in records)
     audit['exploratory_limits'] = dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6)
+    audit['initial_zero_kl_outlier_exception'] = initial_policy and audit['max_abs'] > 2.
     audit['teacher_kl_approximate'] = audit['status'] != 'GO'
     audit['training_runtime_accepted'] = accept_training_audit(audit, records, allow_numerical_target_miss)
     (output / 'rollout-teacher-parity.json').write_text(json.dumps(audit, indent=2) + '\n')

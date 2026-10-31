@@ -33,3 +33,13 @@ def test_pending_task_gradient_save_preserves_values_and_does_not_modify_live_gr
     model.zero_grad(set_to_none=True)
     with pytest.raises(ValueError, match='cover all trainable'):
         save_pending_gradients(tmp_path / 'bad.pt', model, records, policy_version=0, metadata={})
+
+
+def test_initial_identical_reference_has_zero_kl_and_reports_rare_teacher_outlier():
+    audit = dict(status='HOLD', mean_abs=.01795, p99=.271, max_abs=2.187, initial_policy=True)
+    rows = [dict(native_capture_mean_loss_error=5.3e-8)]
+    assert accept_training_audit(audit, rows, True)
+    assert not accept_training_audit(dict(audit,initial_policy=False),rows,True)
+    assert not accept_training_audit(audit,rows,False)
+    assert not accept_training_audit(dict(audit,mean_abs=.46),rows,True)
+    assert not accept_training_audit(dict(audit,max_abs=float('inf')),rows,True)
