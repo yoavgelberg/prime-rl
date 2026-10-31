@@ -12,6 +12,7 @@ import numpy as np
 from .overlap_config import BoardProtocol, RunConfig, SPLITS, board_protocol, episode_metrics
 from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions, summarize
 from .rng_training_config import outcome_reward
+from .hero_protocol import batch_size, is_hero, training_identity
 
 
 def paired_bootstrap(treatment, control, *, seed=0, resamples=10000):
@@ -316,15 +317,17 @@ def training_curve_rows(runs):
         state = root / 'state.json'
         state = json.loads(state.read_text()) if state.exists() else {}
         committed = state.get('policy_version', 0)
+        batch = batch_size(state)
         for path in sorted((root / 'update-metrics').glob('update-*.json')):
             point = json.loads(path.read_text())['metrics']
             update = point['update']
             if update > committed:
                 continue
-            if update < 1 or point['episodes'] != 64 or point['training_episodes'] != update * 64:
-                raise ValueError('A training curve requires complete 64-trajectory optimizer updates')
+            if update < 1 or point['episodes'] != batch or point['training_episodes'] != update * batch:
+                raise ValueError(f'A training curve requires complete {batch}-trajectory optimizer updates')
             rows.append(dict(training_seed=run['training_seed'], kind='sampled_training', update=update,
-                training_episodes=point['training_episodes'], mean_return=point['mean_return']))
+                training_episodes=point['training_episodes'],
+                mean_return=point['mean_native_return'] if is_hero(state) else point['mean_return']))
         explicit = run.get('validation_summaries')
         paths = list((root / 'validation').glob('update-*/summary.json')) if explicit is None else list(map(Path, explicit))
         if explicit is not None and not paths:
@@ -345,8 +348,7 @@ def training_curve_rows(runs):
             if explicit is not None:
                 protocol = json.loads((path.parent / 'evaluation-protocol.json').read_text())
                 config = RunConfig(**protocol['config'])
-                if any(state.get(key) != value for key, value in config.scientific_identity().items()):
-                    raise ValueError('Deferred validation and training scientific identities differ')
+                training_identity(root, state, config)
                 if point.get('split') != 'validation' or point.get('attention') != 'ps':
                     raise ValueError('Deferred learning curves use only PS validation results')
                 condition = load_condition(dict(name=f'validation-{update}', policy='PS RL',
@@ -356,13 +358,13 @@ def training_curve_rows(runs):
                 if any(row.get('policy_version') != update or row.get('policy_identity') != point.get('policy_identity')
                        for row in condition['rows']):
                     raise ValueError('Deferred validation records belong to another checkpoint')
-                if any(row.get(key) != state.get(key) for row in condition['rows']
+                if any(row.get(key) != getattr(config, key) for row in condition['rows']
                        for key in ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')):
                     raise ValueError('Deferred validation records used another generation controller')
                 if config.seed != run['training_seed'] or not np.isclose(condition['mean_return'], point['mean_return'], rtol=0, atol=1e-10):
                     raise ValueError('Deferred validation return or training seed differs from its records')
             rows.append(dict(training_seed=run['training_seed'], kind='greedy_validation', update=update,
-                training_episodes=update * 64, mean_return=point['mean_return']))
+                training_episodes=update * batch, mean_return=point['mean_return']))
     if any(not np.isfinite(row['mean_return']) for row in rows):
         raise ValueError('A return curve cannot contain nonfinite measurements')
     return rows

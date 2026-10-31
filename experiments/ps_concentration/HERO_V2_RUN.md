@@ -39,3 +39,13 @@ python -m experiments.ps_concentration.hero_telemetry --run-dir RUN
 ```
 
 This CPU command copies complete actor reports into RUN/actor-telemetry,checks their collection policy,episode identities and token totals against every committed batch,and saves a hashed manifest. Existing copies must match their original bytes. Shared KV-pool allocation is reported separately from per-game logical retained KV. Run the command on the training node while its reports remain available; saved copies remain usable after node cleanup. It launches no model and changes no training state.
+
+Prepare deferred validation with a captured evaluation implementation:
+
+```bash
+python -m experiments.ps_concentration.hero_validation_plan --run-dir RUN --output VALIDATION_DIR --policy-dir POLICIES --source-root SOURCE --source-sha256 SHA256
+```
+
+The plan launches no model. It fixes original full/PS controls and PS candidates every16updates through128,all on the reserved128validation boards,with four- and eight-GPU command layouts. Export paths may be prepared before exports exist; preserve and verify those files before execution. Run evaluations only after training and its workers finish. Selection uses the highest validation efficiency reward pairs/8 minus responses/96,with earlier updates winning ties; training error penalties remain separately reported. The original checkpoint remains eligible.
+
+The existing rng_select and rng_final_plan CLIs accept this hero plan. They validate the nested hero training identity and the current128-thinking/32-answer controller,without presenting the shared inference RunConfig as the training algorithm. Final report training-episode counts derive from the saved global batch128. Its efficiency curve uses the unshaped efficiency reward; hero_report additionally plots the reward including error penalties. Native RNG score is pairs found. Greedy controls using this final controller remain necessary even when earlier unrestricted-thinking baselines were strong.

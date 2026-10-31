@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .overlap_config import RunConfig
 from .rng_report import load_condition
+from .hero_protocol import is_hero, training_identity
 
 
 def read_json(path):
@@ -39,9 +40,9 @@ def select_checkpoint(plan_path, run, *, gpus):
         if digest != entry['config_sha256']:
             raise ValueError('Prespecified evaluation configuration changed')
         config = RunConfig(**read_json(config_path))
-        identity = config.scientific_identity()
-        if any(state.get(key) != value for key, value in identity.items()):
-            raise ValueError('Validation and training scientific identities differ')
+        identity = training_identity(run, state, config)
+        if is_hero(state) and plan.get('training_identity') != identity:
+            raise ValueError('Validation plan must pin the complete hero training identity')
         attention, version = entry['attention'], entry['policy_version']
         if attention not in ('ps', 'full') or attention != argument(argv, '--attention'):
             raise ValueError('Planned attention and evaluation command differ')
@@ -55,7 +56,7 @@ def select_checkpoint(plan_path, run, *, gpus):
         summary = read_json(summary_path)
         protocol = read_json(summary_path.parent / 'evaluation-protocol.json')
         actual_identity = RunConfig(**protocol['config']).scientific_identity()
-        if actual_identity != identity or summary.get('split') != 'validation':
+        if actual_identity != config.scientific_identity() or summary.get('split') != 'validation':
             raise ValueError('Saved evaluation protocol differs from the planned validation run')
         condition = load_condition(dict(name=entry['condition'], policy='PS RL' if version else 'base',
             training_seed=config.seed if version else None, split='validation', attention=attention,
@@ -94,7 +95,7 @@ def select_checkpoint(plan_path, run, *, gpus):
     forgetting_gap = full_fraction - base_ps['matched_fraction']
     return dict(**selected, selection='Highest complete PS validation efficiency return; earlier update on ties',
         split='validation', episodes=128, attention='ps', window=identities[0]['window'],
-        training_seed=state['training_seed'],
+        training_seed=config.seed,
         training_barrier=plan['training_barrier'], committed_training_version=state['policy_version'],
         candidates=sorted(candidates, key=lambda row: row['update']), full_context_control=controls[0],
         competence_and_forgetting_status='GO' if full_fraction >= .8 and forgetting_gap >= .1 else 'HOLD',
