@@ -1,11 +1,39 @@
 from types import SimpleNamespace
 import copy
+import gzip
+import json
+import sys
 
 import pytest
 import torch
 
 from . import rng_intervene as module
 from .test_rng_memory_metrics import CharacterTokenizer
+
+
+def test_parallel_workers_can_store_disjoint_summaries_beside_shared_state_results(tmp_path, monkeypatch):
+    import transformers
+
+    revision = '768f209d9ea81521153ed38c47d515654e938aea'
+    reference = tmp_path / revision
+    reference.mkdir()
+    (reference / 'generation_config.json').write_text(json.dumps(dict(eos_token_id=0)))
+    checkpoint = tmp_path / 'policy'
+    checkpoint.mkdir()
+    (checkpoint / 'experiment.json').write_text(json.dumps(dict(policy_version=16, window=1024, model_revision=revision)))
+    states = tmp_path / 'empty-states.jsonl.gz'
+    states.write_bytes(gzip.compress(b''))
+    monkeypatch.setattr(module, 'native_modules', lambda source: (None, None, None))
+    monkeypatch.setattr(transformers.AutoTokenizer, 'from_pretrained', lambda reference: CharacterTokenizer())
+    results = tmp_path / 'results'
+    for rank in (0, 1):
+        summary = tmp_path / f'worker-{rank}-summary.json'
+        monkeypatch.setattr(sys, 'argv', ['rng_intervene', '--checkpoint', str(checkpoint),
+            '--states', str(states), '--reference', str(reference), '--source', 'unused',
+            '--output', str(results), '--summary-output', str(summary)])
+        module.main()
+        assert json.loads(summary.read_text())['qualified_states'] == 0
+    assert not (results / 'summary.json').exists()
 
 
 def test_intervention_cannot_mix_checkpoints_boards_windows_or_thinking_controllers(tmp_path):

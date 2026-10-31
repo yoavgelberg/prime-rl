@@ -67,3 +67,11 @@ python -m experiments.ps_concentration.hero_finish --run-dir RUN --plan VALIDATI
 It requires the completed training state,an idle assigned GPU set,and exact-weight verification receipts for every candidate. It preserves all BF16 candidates on shared storage,checks copied file hashes,runs complete validation,selects a checkpoint,runs the prescribed final conditions,and renders tables,figures and20fixed-order greedy examples. Completed conditions are verified and skipped on resume. A four-GPU continuation uses the same command with --gpus4:the original plan files remain fixed while actual GPU counts are recorded in evaluation protocols and per-cohort accounting. The evaluation-only --gpus override preserves the board seeds,model,controller and attention settings.
 
 Evaluation uses buffered native logging and compressed full histories,as the hero actors do. The final workflow status explicitly leaves causal memory interventions and independent training replication pending. The workflow does not release the allocation or treat performance tables as a textual-memory conclusion.
+
+After performance evaluation has finished,collect and execute memory interventions:
+
+```bash
+python -m experiments.ps_concentration.hero_memory --run-dir RUN --finish-dir FINISH_DIR --output MEMORY_DIR --gpus 8
+```
+
+This requires the completed performance status and the full reserved intervention split. It selects at most128states in fixed seed order before current-turn thinking,then runs unedited,association-swap and equal-size sham branches with32MonteCarlo samples plus a greedy continuation. Independent GPU workers share individual state results and write separate summaries. Four/eight-GPU resumption preserves state identities,random seeds,controller and existing completed results. Every qualified state remains counted,including cases without a usable sham. The combined summary and intervention-table.csv report the all-state and unedited-selects-partner subsets,streaming-versus-cold behavior,native likelihood audits and remaining uncertainty. Effective-BF16 cold reconstruction is not the native vLLM rollout backend;parity failures and fewer than32qualified states prevent a textual-memory conclusion. This command neither releases the allocation nor completes training replication.

@@ -292,6 +292,7 @@ def main():
     parser.add_argument('--reference', required=True, help='Original pinned tokenizer and generation configuration snapshot')
     parser.add_argument('--source', required=True)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--summary-output', help='Separate worker summary when disjoint states share a result directory')
     parser.add_argument('--samples', type=int, default=32)
     parser.add_argument('--device', default='cuda:0')
     args = parser.parse_args()
@@ -307,6 +308,7 @@ def main():
         raise ValueError('The selected checkpoint and reference tokenizer revisions differ')
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
+    summary_path = Path(args.summary_output) if args.summary_output else output / 'summary.json'
     with gzip.open(args.states, 'rt') as handle:
         states = [json.loads(line) for line in handle if line.strip()]
     if len({state['state_id'] for state in states}) != len(states):
@@ -375,9 +377,9 @@ def main():
         row['seconds'] = time.perf_counter() - started
         write_json(output / (state['state_id'] + '.json'), row)
         results.append(row)
-        write_json(output / 'summary.json', summarize_results(states, results))
+        write_json(summary_path, summarize_results(states, results))
         print(json.dumps(dict(state_id=state['state_id'], completed=len(results), qualified=len(states))), flush=True)
-    write_json(output / 'summary.json', summarize_results(states, results))
+    write_json(summary_path, summarize_results(states, results))
 
 
 if __name__ == '__main__':
