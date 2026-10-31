@@ -6,7 +6,7 @@ from .rng_intervention_states import apply_edits, associations, collect_states, 
 from .test_rng_memory_metrics import CharacterTokenizer
 
 
-def fixture(notes='aA=0; aB=1; aC=2; aD=3;'):
+def fixture(notes='aA=0; aB=1; aC=2; aD=3;', *, notes_in_current_turn=False):
     actions = ['aA', 'aB', 'aC', 'aD', 'bA', 'bB', 'bC', 'bD', 'cA', 'aA']
     ranks = ['0', '1', '2', '3', '4', '5', '6', '7', '0', '0']
     text, turns, native = 'SYS', [], []
@@ -15,7 +15,7 @@ def fixture(notes='aA=0; aB=1; aC=2; aD=3;'):
         board = '\n'.join(row + ' ' + ''.join('[' + visible.get(row + col, '*') + ']' for col in 'ABCD') for row in 'abcd')
         text += board + '\n'
         start = len(text)
-        if index == 9:
+        if index == (9 if notes_in_current_turn else 8):
             text += 'Thinking filler ' * 100 + '\n' + notes + '\n'
         text += '</think>\nAction: ' + action + '\n'
         turns.append(dict(start=start, end=len(text), stop_condition='action_line'))
@@ -30,7 +30,7 @@ def fixture(notes='aA=0; aB=1; aC=2; aD=3;'):
         roles=roles, attention='ps', greedy=True, board_seed=4000000), dict(config=dict(rows=4, cols=4), turns=native)
 
 
-def test_qualifying_state_is_before_first_coordinate_and_has_equal_size_controls():
+def test_qualifying_state_precedes_current_thinking_and_has_equal_size_controls():
     record, game = fixture()
     states = collect_states(record, game, CharacterTokenizer())
     assert len(states) == 1
@@ -38,8 +38,9 @@ def test_qualifying_state_is_before_first_coordinate_and_has_equal_size_controls
     assert state['partner'] == 'aA' and state['false_partner'] == 'aB'
     assert state['direct_reveal_age'] > 2 * state['window']
     assert state['last_direct_reveal'] not in state['retained_positions']
-    assert state['decision_position'] == len(record['tokens']) - 3
-    assert record['tokens'][state['decision_position']] == ord('a')
+    assert state['state_boundary'] == 'before_thinking'
+    assert state['decision_position'] == record['turns'][9]['start']
+    assert all(item['end'] <= state['decision_position'] for item in state['qualifying_associations'])
     assert edit_size(state['edits']) == edit_size(state['sham_edits']) == (4, 2)
     assert state['retained_positions'][:3] == [0, 1, 2]
     assert state['retained_positions'][3] > 3
@@ -49,6 +50,14 @@ def test_qualifying_state_is_before_first_coordinate_and_has_equal_size_controls
     assert len(changed) == len(sham) == len(original) == 131
     assert sum(a != b for a, b in zip(changed, original)) == sum(a != b for a, b in zip(sham, original)) == 2
     assert state['retained_token_ids'] == original
+
+
+def test_current_thinking_cannot_qualify_as_retained_memory_for_the_primary_intervention():
+    record, game = fixture(notes_in_current_turn=True)
+    assert collect_states(record, game, CharacterTokenizer()) == []
+    diagnostic = collect_states(record, game, CharacterTokenizer(), boundary='first_coordinate')
+    assert len(diagnostic) == 1 and diagnostic[0]['state_boundary'] == 'first_coordinate'
+    assert diagnostic[0]['decision_position'] == len(record['tokens']) - 3
 
 
 def test_recent_notes_never_replace_old_direct_environment_reveal_age():

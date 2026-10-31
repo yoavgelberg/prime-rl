@@ -156,19 +156,23 @@ def apply_edits(state, edits):
     return tokens
 
 
-def collect_states(record, game, tokenizer, *, maximum=128, manual=None):
+def collect_states(record, game, tokenizer, *, maximum=128, manual=None, boundary='before_thinking'):
     if record['attention'] != 'ps' or not record['greedy']:
         raise ValueError('Memory interventions require greedy PS trajectories')
+    if boundary not in ('before_thinking', 'first_coordinate'):
+        raise ValueError('Unknown intervention boundary')
     states = []
     for decision in known_match_decisions(record, game, tokenizer):
         if decision['chosen'] is None:
             continue
-        query, window = decision['query_position'], record['window']
+        window = record['window']
+        query = decision['turn_start'] - 1 if boundary == 'before_thinking' else decision['query_position']
         start = max(record['prefix_length'], query - window + 1)
         end = query + 1
         annotations = (manual or {}).get(decision['response_index'], [])
         notes = associations(record, tokenizer, start, end, manual=annotations)
-        for partner, age in sorted(decision['partners'].items()):
+        for partner in sorted(decision['partners']):
+            age = query - decision['known_unmatched'][partner]['last_direct_reveal']
             if age <= 2 * window:
                 continue
             target = decision['target_rank']
@@ -189,7 +193,9 @@ def collect_states(record, game, tokenizer, *, maximum=128, manual=None):
                 retained_roles=[record['roles'][index] for index in positions], qualifying_associations=relevant,
                 recognition=sorted({item['recognition'] for item in relevant}),
                 analysis_version=ANALYSIS_VERSION,
-                state_boundary='Immediately before the first coordinate token of the pending second-pick action')
+                state_boundary=boundary,
+                continuation_protocol={key: record.get(key) for key in (
+                    'thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')})
             pair = find_edits(notes, partner, target, known, record, tokenizer)
             if pair is None:
                 state['untestable_reason'] = 'No truthful unrelated sham with equal token-span size and equal changed-token count'
@@ -214,6 +220,8 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--annotations', help='Optional manual {board_seed,response_index,associations:[...]} JSONL')
     parser.add_argument('--maximum', type=int, default=128)
+    parser.add_argument('--boundary', choices=['before_thinking', 'first_coordinate'], default='before_thinking',
+                        help='The primary intervention precedes new thinking; the coordinate cursor is diagnostic only')
     args = parser.parse_args()
     if not 1 <= args.maximum <= 128:
         parser.error('Collect at most the precommitted 128 states')
@@ -238,10 +246,11 @@ def main():
         game_path = Path(record['native_game_json'])
         game = json.loads(game_path.read_text())
         candidates = collect_states(record, game, tokenizer, maximum=args.maximum - len(states),
-                                    manual=manual.get(row['board_seed']))
+                                    manual=manual.get(row['board_seed']), boundary=args.boundary)
         for state in candidates:
             state.update(token_record=str(path), token_record_sha256=row['token_record_sha256'],
-                         native_game_json=str(game_path), state_id=f'b{row["board_seed"]}-r{state["response_index"]}')
+                         native_game_json=str(game_path),
+                         state_id=f'b{row["board_seed"]}-r{state["response_index"]}-{args.boundary}')
         states.extend(candidates)
         if len(states) == args.maximum:
             break
@@ -251,6 +260,7 @@ def main():
         for state in states:
             handle.write(json.dumps(state) + '\n')
     result = dict(qualified_states=len(states), testable_states=sum('edits' in state for state in states),
+        state_boundary=args.boundary,
         minimum_for_textual_memory_conclusion=32, intervention_branches_executed=False,
         status='COLLECTED' if len(states) >= 32 else 'INSUFFICIENT QUALIFYING STATES',
         recognition='Conservative explicit coordinate/rank patterns plus exact manual token spans when provided; no LLM judge',

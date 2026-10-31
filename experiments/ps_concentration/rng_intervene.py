@@ -8,10 +8,13 @@ import json
 from pathlib import Path
 import re
 import sys
+from threading import Event
 import time
 
 import numpy as np
 import torch
+
+from prime_rl.inference.vllm.ps_interactive import PersistentChat
 
 from .native_cold import NativeCold
 from .native_teacher import NativeTeacher
@@ -34,6 +37,18 @@ def native_modules(source):
 
 def coordinate(position):
     return ord(position[0]) - ord('a'), ord(position[1]) - ord('A')
+
+
+def validate_source(record, state, metadata, checkpoint):
+    if (record['policy_version'] != metadata['policy_version']
+            or record['policy_identity'] != str(Path(checkpoint).resolve()) or not record['greedy']
+            or record['attention'] != 'ps' or record['window'] != state['window']
+            or record['window'] != metadata['window'] or record['board_seed'] != state['board_seed']):
+        raise ValueError('Intervention source is not a greedy PS rollout of this exact checkpoint and board')
+    keys = ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')
+    protocol = {key: record.get(key) for key in keys}
+    if protocol != state['continuation_protocol'] or protocol != {key: metadata.get(key) for key in keys}:
+        raise ValueError('Intervention source changed the checkpoint thinking controller')
 
 
 def replay_state(state, game, env_type, invalid_type):
@@ -129,6 +144,59 @@ def continue_branch(base, tokenizer, eos_ids, state, tokens, final_prefix, *, sa
         resource_terminations=sum(row['stop_condition'] == 'transcript_capacity' for row in rows))
 
 
+@torch.inference_mode()
+def continue_turn(base, tokenizer, eos_ids, state, tokens, record, *, samples, rng_seed,
+                  parse_coord, environment, invalid_type, transcript_cap=262144):
+    start = state['decision_position']
+    if start != record['turns'][state['response_index']]['start']:
+        raise ValueError('The primary intervention must precede all current-turn thinking')
+    protocol = {key: record.get(key) for key in (
+        'thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')}
+    if protocol != state['continuation_protocol']:
+        raise ValueError('Intervention continuation changed the native thinking controller')
+    stream = NativeCold(base, state['prefix_length'], state['window'], copies=samples + 1)
+    logits = stream.prefill(tokens, state['retained_positions'])
+    chats = []
+    for _ in range(samples + 1):
+        chat = PersistentChat(tokenizer, eos_token_ids=eos_ids, transcript_cap=transcript_cap, **protocol)
+        chat.prefix = tuple(record['tokens'][:state['prefix_length']])
+        chat.tokens = list(record['tokens'][:start])
+        chat.roles = list(record['roles'][:start])
+        chat.old_logps = [None] * start
+        chat.old_tempered_logps = [None] * start
+        chat.turn_start, chat.turn_started = start, time.perf_counter()
+        chat.request = dict(event=Event(), messages=0, response=None, error=None)
+        chats.append(chat)
+    generator = torch.Generator(device=base.device).manual_seed(rng_seed)
+    for _ in range(transcript_cap - start):
+        proposals = torch.cat([logits[:1].argmax(-1), torch.multinomial(
+            (logits[1:].float() / .6).softmax(-1), 1, generator=generator)[:, 0]]) if samples else logits.argmax(-1)
+        actual = []
+        for chat, token in zip(chats, proposals.tolist(), strict=True):
+            actual.append(chat.advance(token, None, None).token if chat.request is not None else next(iter(eos_ids)))
+        if all(chat.request is None for chat in chats):
+            break
+        logits = stream.step(torch.tensor(actual, device=base.device, dtype=torch.long))
+    rows = []
+    for index, chat in enumerate(chats):
+        turn = chat.turns[-1] if chat.turns else None
+        text = turn['content'] if turn is not None else ''
+        parsed = parse_coord(text, environment.rows, environment.cols) if turn is not None else None
+        action = chr(parsed[0] + ord('a')) + chr(parsed[1] + ord('A')) if parsed is not None else None
+        rows.append(dict(score_choice(environment, action, state, invalid_type),
+            tokens=chat.tokens[start:], roles=chat.roles[start:], sampled_ids=chat.sampled,
+            final_text=text, thinking_tokens=chat.thinking_tokens,
+            thinking_budget_forced=chat.thinking_budget_forced,
+            stop_condition=turn['stop_condition'] if turn is not None else 'transcript_capacity', greedy=index == 0))
+    sampled = rows[1:]
+    return dict(greedy=rows[0], sampled=sampled, sampling_temperature=.6, top_p=1., top_k=-1,
+        samples=samples, probability_correct_partner=sum(row['correct'] for row in sampled) / samples if samples else None,
+        probability_following_false=sum(row['follows_false'] for row in sampled) / samples if samples else None,
+        probability_definition='Monte Carlo next-flip probability including newly generated thinking with the native controller; greedy excluded',
+        rng_seed=rng_seed, peak_kv_bytes=stream.cache_bytes,
+        resource_terminations=sum(row['stop_condition'] == 'transcript_capacity' for row in rows))
+
+
 def summarize_results(states, results):
     qualified = len(states)
     executed = [row for row in results if 'unedited' in row]
@@ -136,7 +204,9 @@ def summarize_results(states, results):
         untestable_states=sum('untestable_reason' in state for state in states),
         pending_states=qualified - len(results), branches={}, conditional_unedited_selects_p={},
         minimum_states=32, sufficient_executed_states=len(executed) >= 32,
+        state_boundaries=sorted({state.get('state_boundary', 'unspecified') for state in states}),
         causal_textual_memory_established=False,
+        causal_action_cursor_text_usage_established=False,
         limitation='NativeCold uses native-effective BF16 arithmetic and exact FA4 PS attention at original positions; native streaming likelihood audits are reported separately')
     for subset, key in ((executed, 'branches'),
                         ([row for row in executed if row['unedited']['greedy']['action'] == row['partner']],
@@ -169,31 +239,39 @@ def summarize_results(states, results):
         result['false_association_effect_swap_minus_sham'] = dict(mean=float(differences.mean()),
             ci95=interval, board_clusters=len(boards),
             uncertainty='Bootstrap over board seeds retaining all collected states per sampled board; no between-board interval with one board; not independent training runs')
-        errors = np.array([row['streaming_parity']['absolute_error'] for row in executed])
+        errors = np.array([error for row in executed for error in
+                           row['streaming_parity'].get('absolute_errors', [row['streaming_parity']['absolute_error']])])
         strict = bool(errors.mean() <= .01 and np.quantile(errors, .99) <= .05)
         result['streaming_teacher_parity'] = dict(mean_abs=float(errors.mean()), p99=float(np.quantile(errors, .99)),
-            status='GO' if strict else 'HOLD', scope='First coordinate token at every executed intervention state')
+            status='GO' if strict else 'HOLD', scope='All sampled tokens in each executed source turn')
         drop = np.mean([row['sham']['probability_correct_partner'] - row['swap']['probability_correct_partner'] for row in executed])
-        result['causal_textual_memory_established'] = bool(len(executed) >= 32 and len(executed) == qualified
+        effect = bool(len(executed) >= 32 and len(executed) == qualified
             and strict and interval is not None and interval[0] > 0 and drop > 0)
+        result['causal_textual_memory_established'] = effect and result['state_boundaries'] == ['before_thinking']
+        result['causal_action_cursor_text_usage_established'] = effect and result['state_boundaries'] == ['first_coordinate']
     return result
 
 
 @torch.no_grad()
 @torch.autocast('cuda', dtype=torch.bfloat16)
 def audit_streaming(base, record, state):
-    end = state['decision_position']
+    turn = record['turns'][state['response_index']]
+    end = turn['end']
     ids = torch.tensor(record['tokens'][:end], device=base.device)
     positions = torch.arange(end, device=base.device)
     teacher = NativeTeacher(base, state['window'], backend='fa4')
     hidden = teacher.segment(ids, positions, positions, state['prefix_length'])
-    logits = teacher.linear(hidden[-1:], base.lm_head.weight).float() / .6
-    actual = float(logits.log_softmax(-1)[0, record['tokens'][end]])
-    expected = record['old_tempered_logps'][end]
-    if expected is None:
-        raise ValueError('The intervention cursor does not precede a sampled coordinate token')
-    return dict(actual_logp=actual, native_streaming_logp=expected, absolute_error=abs(actual - expected),
-                query_position=end - 1, scope='Full-history native-effective PS teacher versus recorded native-vLLM choice')
+    sampled = [position for position in range(turn['start'], end) if record['roles'][position] == 'assistant']
+    if not sampled or any(record['old_tempered_logps'][position] is None for position in sampled):
+        raise ValueError('The intervention source turn has missing sampled token likelihoods')
+    selected = torch.tensor(sampled, device=base.device)
+    logits = teacher.linear(hidden[selected - 1], base.lm_head.weight).float() / .6
+    actual = logits.log_softmax(-1).gather(1, ids[selected, None])[:, 0].cpu().tolist()
+    expected = [record['old_tempered_logps'][position] for position in sampled]
+    errors = [abs(a - b) for a, b in zip(actual, expected, strict=True)]
+    return dict(absolute_error=max(errors), absolute_errors=errors, sampled_positions=sampled,
+                query_position=state['decision_position'] - 1,
+                scope='Full-history native-effective PS teacher versus every recorded native-vLLM sample in the turn')
 
 
 def main():
@@ -218,6 +296,8 @@ def main():
         raise ValueError('Use a selected trained PS checkpoint at the frozen window')
     if Path(args.reference).name != '768f209d9ea81521153ed38c47d515654e938aea':
         raise ValueError('Use the immutable original tokenizer/EOS snapshot')
+    if metadata['model_revision'] != Path(args.reference).name:
+        raise ValueError('The selected checkpoint and reference tokenizer revisions differ')
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     with gzip.open(args.states, 'rt') as handle:
@@ -256,6 +336,7 @@ def main():
                 raise ValueError('Intervention source tokens changed')
             with gzip.open(token_path, 'rt') as handle:
                 record = json.load(handle)
+            validate_source(record, state, metadata, checkpoint)
             end, prefix_length = state['decision_position'], state['prefix_length']
             positions = list(range(prefix_length)) + list(range(max(prefix_length, end - state['window']), end))
             if (state['retained_positions'] != positions
@@ -269,6 +350,11 @@ def main():
             seed = int.from_bytes(hashlib.sha256(f'intervention-v1:{state["state_id"]}'.encode()).digest()[:8], 'little') % (2**63 - 1)
             for branch, changes in [('unedited', []), ('swap', state['edits']), ('sham', state['sham_edits'])]:
                 tokens = apply_edits(state, changes)
+                if state.get('state_boundary') == 'before_thinking':
+                    row[branch] = continue_turn(base, tokenizer, eos, state, tokens, record,
+                        samples=args.samples, rng_seed=seed, parse_coord=parse_coord,
+                        environment=environment, invalid_type=invalid_type)
+                    continue
                 prefix_ids = list(record['tokens'][turn['start']:end])
                 for edit in changes:
                     if edit['start'] >= turn['start']:

@@ -1,10 +1,27 @@
 from types import SimpleNamespace
 import copy
 
+import pytest
 import torch
 
 from . import rng_intervene as module
 from .test_rng_memory_metrics import CharacterTokenizer
+
+
+def test_intervention_cannot_mix_checkpoints_boards_windows_or_thinking_controllers(tmp_path):
+    protocol = dict(thinking_token_limit=128, action_token_limit=None,
+                    thinking_budget_transition='\n</think>\n\n')
+    record = dict(policy_version=32, policy_identity=str(tmp_path.resolve()), greedy=True,
+                  attention='ps', window=1024, board_seed=4000000, **protocol)
+    state = dict(window=1024, board_seed=4000000, continuation_protocol=protocol)
+    metadata = dict(policy_version=32, window=1024, **protocol)
+    module.validate_source(record, state, metadata, tmp_path)
+    for key, value in [('policy_version',16), ('policy_identity','another'), ('greedy',False),
+                       ('attention','full'), ('window',512), ('board_seed',4000001),
+                       ('thinking_token_limit',None), ('thinking_budget_transition',None)]:
+        wrong = dict(record, **{key:value})
+        with pytest.raises(ValueError):
+            module.validate_source(wrong, state, metadata, tmp_path)
 
 
 def result(index, error=.001):
@@ -19,7 +36,7 @@ def result(index, error=.001):
 
 
 def test_textual_memory_conclusion_requires_states_complete_branches_parity_and_effect():
-    states = [dict(state_id=str(index)) for index in range(32)]
+    states = [dict(state_id=str(index), state_boundary='before_thinking') for index in range(32)]
     rows = [result(index) for index in range(32)]
     summary = module.summarize_results(states, rows)
     assert summary['causal_textual_memory_established']
@@ -38,6 +55,21 @@ def test_textual_memory_conclusion_requires_states_complete_branches_parity_and_
     assert not module.summarize_results(incomplete, rows)['causal_textual_memory_established']
     untestable = states + [dict(state_id='uneditable', untestable_reason='No sham')]
     assert not module.summarize_results(untestable, rows + [dict(state_id='uneditable')])['causal_textual_memory_established']
+
+
+def test_fixing_current_thinking_can_only_establish_action_cursor_text_usage():
+    states = [dict(state_id=str(index), state_boundary='first_coordinate') for index in range(32)]
+    summary = module.summarize_results(states, [result(index) for index in range(32)])
+    assert summary['causal_action_cursor_text_usage_established']
+    assert not summary['causal_textual_memory_established']
+
+
+def test_parity_checks_every_sampled_token_rather_than_only_the_action_cursor():
+    states = [dict(state_id=str(index), state_boundary='before_thinking') for index in range(32)]
+    rows = [result(index) for index in range(32)]
+    for row in rows:
+        row['streaming_parity']['absolute_errors'] = [.001, .1]
+    assert not module.summarize_results(states, rows)['causal_textual_memory_established']
 
 
 def test_intervention_uncertainty_clusters_repeated_states_from_the_same_board():
@@ -106,4 +138,65 @@ def test_branch_uses_native_stop_rule_independent_clones_and_separate_greedy_cou
     assert row['resource_terminations'] == 0
     assert row['peak_kv_bytes'] == 1234
     assert all(value['stop_condition'] == 'action_line' for value in row['sampled'])
+    assert not env.board['matched'] and env.last_result is None
+
+
+def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(monkeypatch):
+    class Tokenizer:
+        eos_token_id = 127
+        def encode(self, text, **kwargs):
+            return list(map(ord, text.replace('</think>', chr(126))))
+        def decode(self, tokens, skip_special_tokens=True, **kwargs):
+            return ''.join('</think>' if t == 126 else chr(t) for t in tokens if t != 127 or not skip_special_tokens)
+    tokenizer = Tokenizer()
+    transition = '\n</think>\n\n'
+    action = tokenizer.encode('Action: aA\n')
+    scripts = [[126] + action, [ord('x')] * 2 + [ord('?')] * 4 + action]
+    forwarded = []
+    class Stream:
+        cache_bytes = 1234
+        def __init__(self, base, prefix, window, copies):
+            self.copies, self.index = copies, 0
+        def logits(self):
+            values = torch.full((self.copies, 128), -1000.)
+            for i in range(self.copies):
+                script = scripts[bool(i)]
+                values[i, script[self.index] if self.index < len(script) else 127] = 1000.
+            return values
+        def prefill(self, tokens, positions):
+            assert tokens == [1, 2, 3] and positions == [0, 1, 2]
+            return self.logits()
+        def step(self, tokens):
+            forwarded.append(tokens.tolist())
+            self.index += 1
+            return self.logits()
+    class Env:
+        rows = cols = 4
+        def __init__(self):
+            self.board, self._last_result = {'matched':False}, None
+        @property
+        def last_result(self):
+            return self._last_result
+        def step(self, action):
+            assert action == (0, 0)
+            self.board['matched'] = True
+            self._last_result = dict(matched=True)
+    monkeypatch.setattr(module, 'NativeCold', Stream)
+    protocol = dict(thinking_token_limit=2, action_token_limit=None, thinking_budget_transition=transition)
+    record = dict(tokens=[1, 2, 3] + [0] * 97, roles=['prefix'] * 3 + ['environment_template'] * 97,
+                  turns=[dict(start=100)], **protocol)
+    state = dict(prefix_length=3, window=16, retained_positions=[0, 1, 2], decision_position=100,
+                 response_index=0, false_partner='bB', continuation_protocol=protocol)
+    env = Env()
+    row = module.continue_turn(SimpleNamespace(device='cpu'), tokenizer, {127}, state, [1, 2, 3], record,
+        samples=4, rng_seed=11, parse_coord=lambda text, rows, cols: (0, 0) if text == 'Action: aA' else None,
+        environment=env, invalid_type=ValueError, transcript_cap=140)
+    assert row['greedy']['correct'] and row['greedy']['thinking_tokens'] == 0
+    assert all(r['correct'] and r['thinking_tokens'] == 2 for r in row['sampled'])
+    assert all(r['thinking_budget_forced'] for r in row['sampled'])
+    assert row['sampled'][0]['tokens'] == [ord('x')] * 2 + tokenizer.encode(transition) + action
+    assert row['sampled'][0]['sampled_ids'] == [ord('x')] * 2 + action
+    assert row['sampled'][0]['roles'].count('thinking_budget') == 4
+    assert [tokens[1] for tokens in forwarded[:6]] == [ord('x')] * 2 + tokenizer.encode(transition)
+    assert row['probability_correct_partner'] == 1. and row['resource_terminations'] == 0
     assert not env.board['matched'] and env.last_result is None
