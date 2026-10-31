@@ -61,6 +61,14 @@ The report manifest has `conditions`, `comparisons`, and optional `training_runs
 
 The return-versus-training-episodes figure also supports deferred evaluation: it plots sampled training returns from complete 64-trajectory updates in `update-metrics`, and greedy validation returns in a separate panel when available. Both are labeled explicitly and exported to `training-return-curve.csv`. Only versions at or below the committed `state.json` policy version are included; collecting half a batch never becomes a training point. A sampled training curve does not establish held-out improvement or select a checkpoint.
 
+After the deferred training barrier and all prespecified greedy validation conditions finish, select a checkpoint with:
+
+```bash
+python -m experiments.ps_concentration.rng_select --plan POSTTRAINING_PLAN.json --run-dir TRAINING_RUN_DIR --gpus 4
+```
+
+Use `--gpus 8` for that plan's eight-GPU layout. This CPU-only command checks the complete128-board validation episode records against their summaries, planned configurations, controller identities and checkpoint metadata. It requires every planned PS candidate, including update0, and the matching original full-context control. It selects the highest PS validation efficiency return, retaining the earlier update on ties, and writes `selected-checkpoint.json` with input hashes and competence/forgetting GO or HOLD values. It cannot run before the training barrier or select from final-test data. Run the evaluations separately; this command performs no model inference or training.
+
 Optional condition `summary` paths attach cohort inference costs and measured physical KV-pool bytes, with board-count/attention identity checks. The manifest can include `interventions:[{name,training_seed,summary}]` to produce the intervention table and `allocation_accounting` plus an explicit `accounting_scope` to attach the full allocation-cost ledger. Reports distinguish accepted optimizer-update compute, inference cohort time, and whole allocation time. Requeued allocations and failed/setup/idle/cleanup time belong in allocation cost; pending reservations consume zero GPU-hours.
 
 Capture costs on HAIC using explicit experiment-owned allocation IDs:
