@@ -1,5 +1,7 @@
 # Native Concentration memory RL
 
+**Current experiment:** native RNG-Bench Matching Pairs4×4 with Qwen3-4B-Thinking, PS-only GRPO and backward during generation. Use [the active run instructions](OVERLAP_RUN.md). The POPGym/Instruct commands and results below describe the earlier implementation.
+
 This experiment tests outcome-based adaptation to a fixed system prefix and bounded rolling attention. The neutral prompt permits scratch work but supplies no note format, examples, memory tools, or note-writing reward. Native observations, rewards, action-0 format fallback and transient mismatch observations are preserved.
 
 Run from the repository root with `PYTHONPATH=src:.` and the captured environment active. The commands are also runnable through `uv run --active --no-sync` in that environment.
