@@ -87,8 +87,11 @@ def test_pending_gradient_restore_is_exact_and_validates_before_mutation(tmp_pat
     assert all(p.grad is None for p in model.parameters())
 
 
-def test_pending_resume_commits_original_batch_without_generation(monkeypatch,tmp_path):
+@pytest.mark.parametrize("disable_kl",[False,True])
+def test_pending_resume_commits_original_batch_without_generation(monkeypatch,tmp_path,disable_kl):
     config,path,pending=fixture(tmp_path)
+    if disable_kl:
+        config=replace(config,kl_coefficient=0.)
     calls,logged=[],[]
 
     async def rpc(engine,method,*,kwargs=None,timeout=600.):
@@ -99,6 +102,9 @@ def test_pending_resume_commits_original_batch_without_generation(monkeypatch,tm
             assert kwargs['path']==str(path.with_suffix(''))
             return [dict(episodes=16,policy_version=0)]*4
         if method=='ps_train_reference_kl':
+            if disable_kl:
+                return [dict(kl_sum=0.,normalized_kl=0.,generated_tokens=1600,disabled=True,
+                    parity=dict(mean_abs=None,p99=None,status='DISABLED'))]*4
             return [dict(kl_sum=0.,normalized_kl=0.,generated_tokens=1600,
                 parity=dict(mean_abs=.001,p99=.01,status='GO'))]*4
         if method=='ps_train_step':
@@ -110,7 +116,7 @@ def test_pending_resume_commits_original_batch_without_generation(monkeypatch,tm
 
     monkeypatch.setattr(resume_pending,'worker_rpc',rpc)
     monkeypatch.setattr(resume_pending,'log_metrics',lambda monitor,prefix,metrics,version:logged.append((metrics,version)))
-    receipt=asyncio.run(resume_pending.resume(config,object(),None,path))
+    receipt=asyncio.run(resume_pending.resume(config,object(),None,path,disable_reference_kl=disable_kl))
     assert receipt['new_trajectories_sampled']==0 and receipt['optimizer_update']==1
     assert calls==['ps_train_initialize','ps_train_restore_pending','ps_train_reference_kl','ps_train_step','ps_train_save']
     assert logged[0][1]==1 and logged[0][0]['episodes']==64
@@ -118,6 +124,8 @@ def test_pending_resume_commits_original_batch_without_generation(monkeypatch,tm
     assert state['policy_version']==1 and state['cumulative_generated_tokens']==6400
     saved=json.loads((Path(config.output)/'update-metrics/update-0001.json').read_text())
     assert saved['rollouts']==pending['reports'] and saved['metrics']['resumed_pending_task_gradient']
+    assert state['kl_coefficient']==(0. if disable_kl else .01)
+    assert saved['metrics']['reference_kl_enabled']==(not disable_kl)
 
 
 def test_stale_pending_gradients_cannot_apply_a_second_optimizer_step(monkeypatch,tmp_path):
@@ -157,3 +165,31 @@ def test_inherited_campaign_lock_remains_held_for_following_training(monkeypatch
         with pytest.raises(ValueError,match='another file'):
             with resume_pending.campaign_lock(other,inherited_fd=owner.fileno()):
                 pass
+
+
+def test_disabling_kl_requires_explicit_migration_and_preserves_other_identities(tmp_path):
+    config,path,pending=fixture(tmp_path)
+    disabled=replace(config,kl_coefficient=0.)
+    with pytest.raises(ValueError,match='scientific identity'):
+        resume_pending.validate_manifest(disabled,path)
+    checked,identity=resume_pending.validate_manifest(disabled,path,disable_reference_kl=True)
+    assert checked==pending and identity['kl_coefficient']==0.
+    assert identity['reference_kl_arithmetic']=='disabled; no policy recomputation'
+    with pytest.raises(ValueError,match='zero KL'):
+        resume_pending.validate_manifest(config,path,disable_reference_kl=True)
+    with pytest.raises(ValueError,match='scientific identity'):
+        resume_pending.validate_manifest(replace(disabled,window=512),path,disable_reference_kl=True)
+
+
+def test_zero_kl_worker_never_loads_reference_or_recomputes_policy(monkeypatch):
+    from types import SimpleNamespace
+    from prime_rl.inference.vllm import ps_outcome_worker
+    worker=SimpleNamespace(ps_kl_coefficient=0.,ps_kl_ready=False,
+        ps_trainer=SimpleNamespace(materialized=True),ps_train_records=[dict(generated_tokens=12)])
+    def forbidden(*args,**kwargs):
+        raise AssertionError('Disabled KL must not import a backend or evaluate a model')
+    monkeypatch.setattr(ps_outcome_worker.importlib,'import_module',forbidden)
+    result=ps_outcome_worker.OutcomeWorkerMixin.ps_train_reference_kl(worker,'forbidden.backend',{})
+    assert worker.ps_kl_ready and result['disabled']
+    assert result['kl_sum']==0. and result['generated_tokens']==12
+    assert result['parity']['status']=='DISABLED' and result['parity']['mean_abs'] is None

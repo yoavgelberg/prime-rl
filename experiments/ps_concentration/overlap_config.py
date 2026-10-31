@@ -65,8 +65,8 @@ class RunConfig:
             raise ValueError('The accepted native protocol uses 96 attempts and the native 262K transcript ceiling')
         if self.validation_boards != 128 or self.validation_interval != 16:
             raise ValueError('Checkpoint selection uses the frozen 128-board validation split every 16 updates')
-        if self.temperature != .6 or self.kl_coefficient != .01:
-            raise ValueError('The frozen experiment uses temperature .6 and reference KL coefficient .01')
+        if self.temperature != .6 or self.kl_coefficient not in (0., .01):
+            raise ValueError('Use temperature .6 and either disabled KL or reference KL coefficient .01')
 
     def model_dump(self):
         return asdict(self)
@@ -90,7 +90,8 @@ class RunConfig:
                                 else 'stop_without_inserted_format_tokens'),
             temperature=self.temperature, top_p=1., top_k=-1, kl_coefficient=self.kl_coefficient,
             task_gradient='Native captured activations with PS backward',
-            reference_kl_arithmetic='BF16 NativeTeacher; approximate when strict parity is HOLD',
+            reference_kl_arithmetic=('disabled; no policy recomputation' if self.kl_coefficient == 0 else
+                'BF16 NativeTeacher; approximate when strict parity is HOLD'),
             exploratory_teacher_parity_limits=dict(mean_abs=.03, p99=.35, max_abs=2., native_capture_mean_loss_error=1e-6),
             outcome=asdict(OutcomeConfig()), reward='pairs/8-attempts/96; resource exhaustion -1')
 

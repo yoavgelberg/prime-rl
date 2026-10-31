@@ -198,8 +198,11 @@ def aggregate_update(reports, materialized, kl_reports, steps, *, update, second
         normalized_total_score_surrogate_loss=sum(row['normalized_score_surrogate_loss'] for row in materialized)
             + .01 * sum(row['normalized_kl'] for row in kl_reports),
         kl_per_generated_token=sum(row['kl_sum'] for row in kl_reports) / tokens,
-        parity_mean_abs=sum(row['parity']['mean_abs'] * row['generated_tokens'] for row in kl_reports) / tokens,
-        parity_max_rank_p99=max(row['parity']['p99'] for row in kl_reports),
+        reference_kl_enabled=not all(row.get('disabled', False) for row in kl_reports),
+        parity_mean_abs=(sum(row['parity']['mean_abs'] * row['generated_tokens'] for row in kl_reports) / tokens
+            if all(row['parity']['mean_abs'] is not None for row in kl_reports) else None),
+        parity_max_rank_p99=(max(row['parity']['p99'] for row in kl_reports)
+            if all(row['parity']['p99'] is not None for row in kl_reports) else None),
         strict_parity_go=all(row['parity']['status'] == 'GO' for row in kl_reports))
     backward = [rank for report in reports for rank in report['backward']]
     metrics['peak_allocated_bytes'] = max(row.get('peak_allocated_bytes', 0) for row in backward)
@@ -219,8 +222,12 @@ def setup_wandb(config):
     os.environ['WANDB_MODE'] = 'online'
     setup_logger('INFO')
     monitor = setup_monitor(wandb_config=WandbConfig(project=config.wandb_project,
-        name=f'Qwen3-4B-Thinking PS GRPO seed {config.seed}' + (' (exploratory teacher KL)' if config.allow_numerical_target_miss else ''), id=config.wandb_id, offline=False),
+        name=f'Qwen3-4B-Thinking PS GRPO seed {config.seed}' + (' (native streaming; KL disabled)' if config.kl_coefficient == 0
+            else ' (exploratory teacher KL)' if config.allow_numerical_target_miss else ''), id=config.wandb_id, offline=False),
         output_dir=Path(config.output), run_config=config)
+    if config.kl_coefficient == 0:
+        wandb.config.update(dict(kl_coefficient=0., reference_kl_enabled=False,
+            policy_recomputation=False), allow_val_change=True)
     wandb.define_metric('train/update')
     wandb.define_metric('train/*', step_metric='train/update')
     wandb.define_metric('validation/*', step_metric='train/update')
@@ -249,28 +256,37 @@ def pilot_gate(full, initial, trained):
         full_rl_skipped=True, interpretation='Numerical gate report; expansion remains an agent review of the completed pilot')
 
 
-async def train(config, engine, monitor, competence=None, *, defer_evaluation=False):
+async def train(config, engine, monitor, competence=None, *, defer_evaluation=False, initialized_state=None):
     if config.window != 1024:
         raise ValueError('The training window is frozen at 1024; window sweeps are evaluation only')
     output, runner = Path(config.output), GameRolloutRunner(engine)
     rank_collector = RankCollector(engine, config.gpus) if config.parallel_rank_collection else None
-    initialized = await worker_rpc(engine, 'ps_train_initialize', kwargs=dict(config=dict(
-        optimizer=dict(betas=[.9, .95], epsilon=1e-8), outcome=asdict(OutcomeConfig()),
-        kl_coefficient=config.kl_coefficient)))
-    if len(initialized) != config.gpus or any(row['world_size'] != config.gpus for row in initialized):
-        raise ValueError('The initialized engine differs from the reserved DP layout')
     identity = config.scientific_identity()
     identity['evaluation_deferred'] = defer_evaluation
-    version, best_return, best_update, cumulative_tokens = 0, None, None, 0
-    latest = output / 'checkpoints/latest.pt'
-    if latest.exists():
-        restored = await worker_rpc(engine, 'ps_train_restore', kwargs=dict(path=str(latest), expected_metadata=identity))
-        version = restored[0]['policy_version']
-        if any(row['policy_version'] != version for row in restored):
-            raise ValueError('Restored DP policy versions differ')
-        metadata = restored[0]['metadata']
+    if initialized_state is None:
+        initialized = await worker_rpc(engine, 'ps_train_initialize', kwargs=dict(config=dict(
+            optimizer=dict(betas=[.9, .95], epsilon=1e-8), outcome=asdict(OutcomeConfig()),
+            kl_coefficient=config.kl_coefficient)))
+        if len(initialized) != config.gpus or any(row['world_size'] != config.gpus for row in initialized):
+            raise ValueError('The initialized engine differs from the reserved DP layout')
+        version, best_return, best_update, cumulative_tokens = 0, None, None, 0
+        latest = output / 'checkpoints/latest.pt'
+        if latest.exists():
+            restored = await worker_rpc(engine, 'ps_train_restore', kwargs=dict(path=str(latest), expected_metadata=identity))
+            version = restored[0]['policy_version']
+            if any(row['policy_version'] != version for row in restored):
+                raise ValueError('Restored DP policy versions differ')
+            metadata = restored[0]['metadata']
+            best_return, best_update = metadata.get('best_return'), metadata.get('best_update')
+            cumulative_tokens = metadata.get('cumulative_generated_tokens', 0)
+    else:
+        if any(initialized_state.get(key) != value for key, value in identity.items()):
+            raise ValueError('In-process continuation identity differs from the committed update')
+        version = initialized_state['policy_version']
+        metadata = initialized_state
         best_return, best_update = metadata.get('best_return'), metadata.get('best_update')
-        cumulative_tokens = metadata.get('cumulative_generated_tokens', 0)
+        cumulative_tokens = metadata['cumulative_generated_tokens']
+        latest = output / 'checkpoints/latest.pt'
     recover_uncommitted(output, version)
     boards = permutation(config.seed)
     npy = output / 'training-board-permutation.npy'

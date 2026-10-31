@@ -3,7 +3,7 @@
 import argparse
 import asyncio
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import fcntl
 import hashlib
 import json
@@ -14,7 +14,7 @@ import time
 from prime_rl.orchestrator.ps_games import worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 from .overlap_config import RunConfig, permutation, training_specs
-from .rng_overlap import aggregate_update, lock_run, log_metrics, make_engine, setup_wandb, write_json
+from .rng_overlap import aggregate_update, lock_run, log_metrics, make_engine, setup_wandb, train, write_json
 
 
 @contextmanager
@@ -31,11 +31,16 @@ def campaign_lock(path, *, inherited_fd=8):
             yield
 
 
-def validate_manifest(config, path):
+def validate_manifest(config, path, *, disable_reference_kl=False):
     path = Path(path)
     pending = json.loads(path.read_text())
     identity = dict(config.scientific_identity(), evaluation_deferred=True)
-    if pending['identity'] != identity:
+    prior_identity = identity
+    if disable_reference_kl:
+        if config.kl_coefficient != 0:
+            raise ValueError('Disabling reference KL requires a zero KL coefficient')
+        prior_identity = dict(replace(config, kl_coefficient=.01).scientific_identity(), evaluation_deferred=True)
+    if pending['identity'] != prior_identity:
         raise ValueError('Pending batch scientific identity differs from this run')
     if len(pending['files']) != config.gpus or len(pending['materialized']) != config.gpus:
         raise ValueError('Resume a pending batch with its original GPU replica count')
@@ -59,9 +64,9 @@ def validate_manifest(config, path):
     return pending, identity
 
 
-async def resume(config, engine, monitor, path):
+async def resume(config, engine, monitor, path, *, disable_reference_kl=False):
     path = Path(path)
-    pending, identity = validate_manifest(config, path)
+    pending, identity = validate_manifest(config, path, disable_reference_kl=disable_reference_kl)
     update = pending['policy_version'] + 1
     plan = Path(config.output) / 'rollout-plans' / f'update-{update:04d}.json'
     collection_seconds = pending.get('collection_and_materialize_seconds')
@@ -77,7 +82,7 @@ async def resume(config, engine, monitor, path):
     output, metadata, version = Path(config.output), {}, 0
     latest = output / 'checkpoints/latest.pt'
     if latest.exists():
-        restored = await worker_rpc(engine, 'ps_train_restore', kwargs=dict(path=str(latest), expected_metadata=identity))
+        restored = await worker_rpc(engine, 'ps_train_restore', kwargs=dict(path=str(latest), expected_metadata=pending['identity']))
         if len({row['policy_version'] for row in restored}) != 1:
             raise ValueError('Optimizer replicas restored different versions')
         version, metadata = restored[0]['policy_version'], restored[0]['metadata']
@@ -85,7 +90,7 @@ async def resume(config, engine, monitor, path):
         raise ValueError('Pending batch is stale or its prior optimizer checkpoint is missing')
     update = version + 1
     restored = await worker_rpc(engine, 'ps_train_restore_pending', timeout=1800.,
-        kwargs=dict(path=str(path.with_suffix('')), expected_metadata=identity))
+        kwargs=dict(path=str(path.with_suffix('')), expected_metadata=pending['identity']))
     if sum(row['episodes'] for row in restored) != 64 or any(row['policy_version'] != version for row in restored):
         raise ValueError('Restored gradients do not cover the original fresh batch')
     parity = output / 'parity' / f'update-{update:04d}'
@@ -103,7 +108,8 @@ async def resume(config, engine, monitor, path):
         resumed_pending_task_gradient=True)
     receipt = dict(manifest=str(path), manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         original_collection_policy_version=version, optimizer_update=update, new_trajectories_sampled=0,
-        collection_seconds=collection_seconds,
+        collection_seconds=collection_seconds, reference_kl_disabled=disable_reference_kl,
+        prior_kl_coefficient=pending['identity']['kl_coefficient'], new_kl_coefficient=config.kl_coefficient,
         timing_scope='Saved collection/materialization plus this resume; excludes the failed reference-check attempt and allocation idle time, which require separate allocation accounting')
     write_json(output / 'update-metrics' / f'update-{update:04d}.json', dict(metrics=metrics,
         rollouts=pending['reports'], reductions=pending['reductions'], materialized=pending['materialized'],
@@ -123,16 +129,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
     parser.add_argument('--pending', required=True)
+    parser.add_argument('--disable-reference-kl', action='store_true')
+    parser.add_argument('--continue-training', action='store_true')
     args = parser.parse_args()
     config = RunConfig(**json.loads(Path(args.config).read_text()))
-    validate_manifest(config, args.pending)
+    validate_manifest(config, args.pending, disable_reference_kl=args.disable_reference_kl)
     lock = Path(config.output).parent / 'training.lock'
     with campaign_lock(lock):
         lock_run(config)
         monitor = setup_wandb(config)
         engine = make_engine(config, attention='ps')
+        async def run():
+            receipt = await resume(config, engine, monitor, args.pending, disable_reference_kl=args.disable_reference_kl)
+            print(json.dumps(receipt), flush=True)
+            if args.continue_training:
+                state = json.loads((Path(config.output) / 'state.json').read_text())
+                await train(config, engine, monitor, defer_evaluation=True, initialized_state=state)
         try:
-            print(json.dumps(asyncio.run(resume(config, engine, monitor, args.pending))), flush=True)
+            asyncio.run(run())
         finally:
             engine.shutdown()
             monitor.close()

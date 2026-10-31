@@ -116,7 +116,7 @@ class OutcomeWorkerMixin:
         from prime_rl.trainer.ps_backward.checkpoint import save_pending_gradients
 
         trainer = self.ps_trainer
-        if not trainer.materialized or self.ps_kl_ready:
+        if not trainer.materialized or (self.ps_kl_coefficient != 0 and self.ps_kl_ready):
             raise RuntimeError('Save pending task gradients after materialization and before reference KL')
         rank = self.vllm_config.parallel_config.data_parallel_rank
         with torch.inference_mode(False):
@@ -150,6 +150,13 @@ class OutcomeWorkerMixin:
         return dict(policy_version=trainer.policy_version, episodes=len(rows), rank=rank)
 
     def ps_train_reference_kl(self, backend, options):
+        if self.ps_kl_coefficient == 0:
+            if not self.ps_trainer.materialized:
+                raise RuntimeError('Materialize native task gradients before the optimizer step')
+            self.ps_kl_ready = True
+            return dict(kl_sum=0., normalized_kl=0., generated_tokens=sum(
+                row['generated_tokens'] for row in self.ps_train_records), disabled=True,
+                reference_kl_seconds=0., parity=dict(mean_abs=None, p99=None, status='DISABLED'))
         if not self.ps_trainer.materialized or self.ps_kl_ready:
             raise RuntimeError('Reference KL must be applied once after task-gradient materialization')
         module, name = backend.rsplit('.', 1)
