@@ -68,7 +68,18 @@ def restore_snapshot(path, model, optimizer, *, outcome_config, expected_metadat
                 raise ValueError(f'Optimizer setting changed on resume: {key}')
     model.load_state_dict(state['model'], strict=True)
     optimizer.load_state_dict(state['optimizer'])
+    restore_optimizer_step_devices(optimizer)
     return state
+
+
+def restore_optimizer_step_devices(optimizer):
+    local = getattr(optimizer, 'optim', optimizer)
+    for group in local.param_groups:
+        if group.get('fused') or group.get('capturable'):
+            for parameter in group['params']:
+                state = local.state.get(parameter, {})
+                if isinstance(state.get('step'), torch.Tensor):
+                    state['step'] = state['step'].to(device=parameter.device)
 
 
 def save_inference(path, model, tokenizer, *, policy_version, metadata):

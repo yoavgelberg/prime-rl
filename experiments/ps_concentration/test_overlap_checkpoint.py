@@ -69,3 +69,19 @@ def test_inference_checkpoint_reloads_all_native_bf16_weights_and_ties(tmp_path)
         torch.testing.assert_close(restored.state_dict()[name], value.bfloat16(), rtol=0, atol=0)
     assert restored.lm_head.weight is restored.model.embed_tokens.weight
     assert json.loads((path / 'experiment.json').read_text())['policy_version'] == 1
+
+
+def test_sharded_fused_optimizer_restores_step_counters_to_parameter_device():
+    from types import SimpleNamespace
+    from prime_rl.trainer.ps_backward.checkpoint import restore_optimizer_step_devices
+    parameter=torch.nn.Parameter(torch.empty(2,device='meta'))
+    original=torch.tensor(3.)
+    local=SimpleNamespace(param_groups=[dict(params=[parameter],fused=True)],
+        state={parameter:dict(step=original)})
+    restore_optimizer_step_devices(SimpleNamespace(optim=local))
+    assert local.state[parameter]['step'].device==parameter.device
+    assert original.item()==3.
+    local.param_groups[0]['fused']=False
+    local.state[parameter]['step']=original
+    restore_optimizer_step_devices(local)
+    assert local.state[parameter]['step'] is original
