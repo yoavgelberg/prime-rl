@@ -197,7 +197,9 @@ class OutcomeWorkerMixin:
             if parallel.world_size > 1:
                 rngs = [None] * parallel.world_size
                 dist.all_gather_object(rngs, rng, group=parallel.device_group)
-                trainer.optimizer.consolidate_state_dict(to=0)
+                from prime_rl.trainer.ps_backward.optimizer_serialization import fast_optimizer_serialization
+                with fast_optimizer_serialization():
+                    trainer.optimizer.consolidate_state_dict(to=0)
             else:
                 rngs = [rng]
             receipt = None
