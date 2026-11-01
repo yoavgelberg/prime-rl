@@ -39,6 +39,8 @@ def validate_resume(config):
     run = Path(config.output)
     sidecar = read(run / 'checkpoints/latest.pt.json')
     if sidecar['identity'] != identity(config):
+        if sidecar['identity'].get('source_sha256') not in config.accepted_resume_sources:
+            raise ValueError('Resume the exact declared branch identity')
         validate_resume_identity(sidecar['identity'], config, policy_version=sidecar['policy_version'])
     if (run / 'state.json').exists() and read(run / 'state.json')['policy_version'] != sidecar['policy_version']:
         raise ValueError('Latest committed branch update lacks its exact optimizer snapshot; preserve and diagnose')
