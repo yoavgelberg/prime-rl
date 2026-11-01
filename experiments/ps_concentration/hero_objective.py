@@ -26,8 +26,13 @@ def token_objective(logits, labels, reference, old, advantage, *, temperature=.6
     log_ratio = (logps - old).clamp(-20, 20)
     ratio = log_ratio.exp()
     policy = -torch.minimum(ratio * advantage, ratio.clamp(1 - clip, 1 + clip) * advantage)
-    reference_ratio = (reference - logps).clamp(-20, 20)
-    kl = reference_ratio.expm1() - reference_ratio
+    if reference.ndim == 2:
+        if reference.shape != values.shape:
+            raise ValueError('Categorical reference log probabilities must cover the same token vocabulary')
+        kl = (probabilities * (values - log_normalizer[:, None] - reference.detach())).sum(-1)
+    else:
+        reference_ratio = (reference - logps).clamp(-20, 20)
+        kl = reference_ratio.expm1() - reference_ratio
     loss = policy + kl_coefficient * kl - entropy_coefficient * entropy
     statistics = torch.stack((policy.detach().sum(), kl.detach().sum(), entropy.detach().sum(),
         logps.detach().sum(), (ratio.detach() - 1).abs().gt(clip).float().sum(),
@@ -35,12 +40,14 @@ def token_objective(logits, labels, reference, old, advantage, *, temperature=.6
     return loss.sum(), statistics
 
 
-def trajectory_backward(policy, reference, record, advantage, config, *, adapters=None):
+def trajectory_backward(policy, reference, record, advantage, config, *, adapters=None, kl_estimator='k3'):
     import torch
     from torch.utils.checkpoint import checkpoint
     from .native_teacher import NativeTeacher
 
     tokens = record['tokens']
+    if kl_estimator not in ('k3', 'categorical'):
+        raise ValueError('Use sampled k3 or exact categorical reference KL')
     masks = record['loss_mask']
     assert len(tokens) == len(masks) == len(record['old_tempered_logps'])
     assert sum(masks) == record['generated_tokens'] > 0
@@ -61,8 +68,9 @@ def trajectory_backward(policy, reference, record, advantage, config, *, adapter
     with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
         ref_hidden = teacher.segment(ids[:-1], indices, indices, record['prefix_length'])[selected]
         temperatures = torch.full((len(labels),), config.temperature, device=device)
-        ref = teacher.logps(ref_hidden, labels, block_size=config.head_block_tokens, temperatures=temperatures)
-        del ref_hidden
+        if kl_estimator == 'k3':
+            ref = teacher.logps(ref_hidden, labels, block_size=config.head_block_tokens, temperatures=temperatures)
+            del ref_hidden
     with torch.autocast('cuda', dtype=torch.bfloat16):
         hidden = actor.segment(ids[:-1], indices, indices, record['prefix_length'])[selected]
         losses, statistics = [], []
@@ -74,8 +82,15 @@ def trajectory_backward(policy, reference, record, advantage, config, *, adapter
 
         for start in range(0, len(labels), config.head_block_tokens):
             stop = start + config.head_block_tokens
+            if kl_estimator == 'categorical':
+                with torch.no_grad():
+                    reference_logits = teacher.linear(ref_hidden[start:stop], reference.lm_head.weight)
+                    reference_block = (reference_logits.float() / config.temperature).log_softmax(-1)
+                    del reference_logits
+            else:
+                reference_block = ref[start:stop]
             loss, stats = checkpoint(head, hidden[start:stop], policy.lm_head.weight,
-                labels[start:stop], ref[start:stop], old[start:stop], use_reentrant=False)
+                labels[start:stop], reference_block, old[start:stop], use_reentrant=False)
             losses.append(loss)
             statistics.append(stats)
         objective = torch.stack(losses).sum() / (config.denominator * config.batch_size)
