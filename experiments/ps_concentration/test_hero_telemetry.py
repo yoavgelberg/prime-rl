@@ -62,3 +62,26 @@ def test_preserved_source_report_is_immutable(run_with_actor_reports):
     save(path, json.loads(path.read_text()) | dict(seconds=4.))
     with pytest.raises(ValueError, match='differs from its node-local source'):
         preserve(run)
+
+
+def test_continuation_reports_start_after_shared_parent(run_with_actor_reports):
+    run, node, actors = run_with_actor_reports
+    metric = run / 'update-metrics/update-0001.json'
+    point = json.loads(metric.read_text())
+    point['metrics']['update'] = 129
+    save(run / 'update-metrics/update-0129.json', point)
+    metric.unlink()
+    save(run / 'state.json', dict(policy_version=129))
+    save(run / 'fork-receipt.json', dict(parent_policy_version=128))
+    for rank in range(actors):
+        source = node / f'actor-{rank}/finished-0001.json'
+        report = json.loads(source.read_text())
+        for row in report['episodes']:
+            row['policy_version'] = 128
+        save(source.with_name('finished-0129.json'), report)
+        source.unlink()
+    result = preserve(run)
+    assert result['episodes'] == 128
+    receipt = json.loads((run / 'actor-telemetry/manifest.json').read_text())
+    assert receipt['shared_parent_version'] == 128
+    assert [row['update'] for row in receipt['updates']] == [129]

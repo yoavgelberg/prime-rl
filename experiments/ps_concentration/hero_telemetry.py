@@ -20,7 +20,9 @@ def preserve(run):
     state = read(run / 'state.json')
     output = run / 'actor-telemetry'
     updates = []
-    for update in range(1, state['policy_version'] + 1):
+    fork = run / 'fork-receipt.json'
+    parent_version = read(fork)['parent_policy_version'] if fork.exists() else 0
+    for update in range(parent_version + 1, state['policy_version'] + 1):
         metric_path = run / f'update-metrics/update-{update:04d}.json'
         metric_data = metric_path.read_bytes()
         point = json.loads(metric_data)
@@ -61,6 +63,7 @@ def preserve(run):
         updates.append(dict(update=update, episodes=len(rows), devices=devices, actor_durations=durations,
             metric_path=str(metric_path), metric_sha256=digest(metric_data), files=files))
     receipt = dict(utc=datetime.now(timezone.utc).isoformat(), committed_update=state['policy_version'],
+        shared_parent_version=parent_version,
         updates=updates, scope='Complete actor reports only. KV pool bytes are shared allocated capacity, '
         'not per-game retained KV or a measurement of peak live logical KV.')
     output.mkdir(parents=True, exist_ok=True)
