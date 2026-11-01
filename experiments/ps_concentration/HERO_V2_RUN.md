@@ -60,7 +60,11 @@ AdamW uses learning rate `2e-6`, betas `(0.9,0.95)`, epsilon `1e-8`, weight deca
 
 The parent uses eight B200s: four independent vLLM actors and four replicated learners. There are 16 distinct boards × eight rollouts = 128 trajectories per update, with 32 live games per actor GPU. Each four-B200 continuation uses two actors and two learners, retaining global batch 128 and group size eight, with 64 live games per actor GPU. The two continuations use disjoint sets of four GPUs on an eight-GPU node, or run sequentially on a four-GPU fallback. Gradients are summed with the same global denominator. Throughput, memory, and allocated GPU-hours must come from saved measurements.
 
+Completed board groups dispatch to available learners while other games continue generating. Policy weights remain frozen throughout that batch's collection and gradient accumulation. One gradient sum and optimizer step ends the batch. Actors that finish their whole assigned share wait at that policy barrier; the implementation does not collect the next policy's games before the update.
+
 Use regular `yejin` only. Run/environment identities, complete dependency/revision locks, board permutations, rollout plans, generation RNGs, token/role/loss/position/log-probability records, per-update metrics, W&B URLs, full optimizer snapshots, and verified BF16 inference exports are saved by [hero_v2.py](hero_v2.py). Durable storage must cover both full continuation states and one temporary checkpoint write; checkpoint writes are serialized across branches. Policy exports use exact lossless archives with a shared full reference. No user-preserved checkpoint is silently discarded.
+
+The parent writes full snapshots asynchronously every eight updates; continuation snapshots and inference candidates are scheduled every 16 updates. A stopping boundary also commits the exact model/optimizer/RNG state. Resume requires the latest committed update's full snapshot and never silently falls back to an older optimizer state. Complete matching episodes can be reused only after policy, seeds, controller, and token hashes agree. Native intermediate game writes may be buffered, but finalized compressed records retain the complete turn history.
 
 ## Approved continuation and evaluation protocol
 
@@ -95,3 +99,15 @@ python -m experiments.ps_concentration.hero_pair_report --final-plan FINAL_PLAN.
 ```
 
 [hero_pair_plan.py](hero_pair_plan.py) freezes the approved matrix. [hero_continue.py](hero_continue.py) verifies state-preserving forks. [hero_pair.py](hero_pair.py) performs the short sweep and matched training. [hero_pair_final.py](hero_pair_final.py) validates, selects, evaluates, and intervenes only after both branches complete. [hero_pair_report.py](hero_pair_report.py) derives results and figures from saved records. These stages do not automatically declare goal completion or release the allocation.
+
+Preserve complete node-local actor reports and verify inference exports with these CPU-only commands:
+
+```bash
+python -m experiments.ps_concentration.hero_telemetry --run-dir RUN_DIRECTORY
+python -m experiments.ps_concentration.hero_exports --checkpoint RUN_DIRECTORY/checkpoints/latest.pt \
+  --policy NODE_POLICY_DIRECTORY --output RUN_DIRECTORY/export-catalog/policy-VERSION.json
+```
+
+Telemetry checks exact episode coverage, policy versions, and token totals, then saves hashed durable reports. Its KV-pool allocation is shared capacity, not per-game logical retained KV. Export verification compares every effective BF16 parameter against the matching FP32 masters, handles tied weights, and verifies tokenizer/template/model/RoPE metadata. Run it before the corresponding latest snapshot is replaced. Exact policy archives preserve model bytes and metadata across allocations; hydration verifies their hashes before use.
+
+The parent run's deployed artifacts are under `/hai/scratch/gelberg/ps/concentration/rng-hero-v2-a1/ps-seed11`; its W&B run is [rng-4b-ps-grpo-s11-hero-v2-a1](https://wandb.ai/tech-ml/ps-memory/runs/rng-4b-ps-grpo-s11-hero-v2-a1). Paired-plan artifacts are under `rng-hero-paired-a1` in the same project root. Source captures, launch receipts, and dependency locks record the actual implementation used by each stage. Training curves describe sampled training episodes; separate greedy results are required for held-out performance claims.
