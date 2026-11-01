@@ -11,7 +11,8 @@ from . import rng_intervene as module
 from .test_rng_memory_metrics import CharacterTokenizer
 
 
-def test_parallel_workers_can_store_disjoint_summaries_beside_shared_state_results(tmp_path, monkeypatch):
+@pytest.mark.parametrize('training_window', [256, 1024])
+def test_parallel_workers_can_store_disjoint_summaries_beside_shared_state_results(tmp_path, monkeypatch, training_window):
     import transformers
 
     revision = '768f209d9ea81521153ed38c47d515654e938aea'
@@ -20,7 +21,7 @@ def test_parallel_workers_can_store_disjoint_summaries_beside_shared_state_resul
     (reference / 'generation_config.json').write_text(json.dumps(dict(eos_token_id=0)))
     checkpoint = tmp_path / 'policy'
     checkpoint.mkdir()
-    (checkpoint / 'experiment.json').write_text(json.dumps(dict(policy_version=16, window=1024, model_revision=revision)))
+    (checkpoint / 'experiment.json').write_text(json.dumps(dict(policy_version=16, window=training_window, model_revision=revision)))
     states = tmp_path / 'empty-states.jsonl.gz'
     states.write_bytes(gzip.compress(b''))
     monkeypatch.setattr(module, 'native_modules', lambda source: (None, None, None))
@@ -50,6 +51,28 @@ def test_intervention_cannot_mix_checkpoints_boards_windows_or_thinking_controll
         wrong = dict(record, **{key:value})
         with pytest.raises(ValueError):
             module.validate_source(wrong, state, metadata, tmp_path)
+
+
+@pytest.mark.parametrize('training_window,evaluation_window', [(1024, 256), (256, 256), (256, 1024)])
+def test_intervention_uses_recorded_evaluation_mask_independently_of_training_window(
+        tmp_path, training_window, evaluation_window):
+    from .hero_protocol import THINKING_TRANSITION
+
+    protocol = dict(thinking_token_limit=128, action_token_limit=32,
+                    thinking_budget_transition=THINKING_TRANSITION)
+    record = dict(policy_version=144, policy_identity=str(tmp_path.resolve()), greedy=True,
+                  attention='ps', window=evaluation_window, board_seed=4000000, **protocol)
+    state = dict(window=evaluation_window, board_seed=4000000, continuation_protocol=protocol)
+    metadata = dict(variant='hero-v2', policy_version=144, window=training_window,
+                    thinking_token_limit=128, action_token_limit=32)
+    original = copy.deepcopy(metadata)
+    module.validate_source(record, state, metadata, tmp_path)
+    assert metadata == original
+    for changed in [dict(record, window=evaluation_window * 2), dict(record, attention='full'),
+                    dict(record, policy_version=128), dict(record, policy_identity='another'),
+                    dict(record, board_seed=4000001), dict(record, thinking_token_limit=64)]:
+        with pytest.raises(ValueError):
+            module.validate_source(changed, state, metadata, tmp_path)
 
 
 def result(index, error=.001):

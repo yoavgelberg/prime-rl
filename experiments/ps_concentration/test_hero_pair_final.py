@@ -140,6 +140,50 @@ def test_final_matrix_uses_selected_models_same_windows_and_disjoint_splits(vali
         assert all(entry['count'] == 128 for entry in sweeps)
 
 
+@pytest.mark.parametrize('gpus', [4, 8])
+def test_reference_memory_preserves_selection_controller_and_reserved_boards(validated, tmp_path, gpus):
+    from . import hero_reference_memory as reference
+    from .hero_protocol import THINKING_TRANSITION
+
+    path, _, validation = validated
+    selection = final.select(validation)
+    selection['selected']['w256'].update(version=128, shared_parent_baseline=True)
+    original = json.loads(json.dumps(selection))
+    entries = reference.prepare(path, selection, tmp_path / f'reference-{gpus}', gpus=gpus)
+    assert selection == original
+    assert {entry['arm']: entry['policy_version'] for entry in entries} == {'w1024': 144, 'w256': 128}
+    assert all(entry['attention'] == 'ps' and entry['window'] == 1024 for entry in entries)
+    assert all(entry['split'] == 'intervention' and entry['count'] == 512 for entry in entries)
+    assert all((entry['first_board_seed'], entry['last_board_seed']) == (4000000, 4000511) for entry in entries)
+    for entry in entries:
+        cfg = RunConfig(**read(entry['argv'][entry['argv'].index('--config') + 1]))
+        assert cfg.thinking_token_limit == 128 and cfg.action_token_limit == 32
+        assert cfg.thinking_budget_transition == THINKING_TRANSITION
+        assert cfg.evaluation_concurrency * gpus == 128
+
+
+def test_reference_memory_rejects_incomplete_main_or_reselected_checkpoints(validated, tmp_path, monkeypatch):
+    from . import hero_reference_memory as reference
+
+    path, _, validation = validated
+    digest = final.file_hash(path)
+    monkeypatch.setattr(reference, 'MAIN_PLAN_SHA256', digest)
+    main = tmp_path / 'main'
+    write(main / 'status.json', dict(status='CONTINUATIONS_COMPLETE_FINAL_EVAL_PENDING'))
+    with pytest.raises(ValueError, match='Complete the main study'):
+        reference.validate_main(path, main)
+    selection = final.select(validation)
+    write(main / 'selection.json', selection)
+    write(main / 'final/plan.json', dict(plan_sha256=digest, selection=selection))
+    write(main / 'status.json', dict(status='PAIRED_RESULTS_AND_INTERVENTIONS_COMPLETE'))
+    assert reference.validate_main(path, main)[1] == selection
+    altered = json.loads(json.dumps(selection))
+    altered['selected']['w1024']['version'] = 192
+    write(main / 'selection.json', altered)
+    with pytest.raises(ValueError, match='validation-selected'):
+        reference.validate_main(path, main)
+
+
 def test_paired_comparison_reports_board_uncertainty_not_seed_replication():
     rows = []
     for name, value in [('w256-ps-w256-test', .6), ('w1024-ps-w256-test', .3), ('w1024-full-test', .7)]:

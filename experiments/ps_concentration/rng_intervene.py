@@ -43,7 +43,7 @@ def validate_source(record, state, metadata, checkpoint):
     if (record['policy_version'] != metadata['policy_version']
             or record['policy_identity'] != str(Path(checkpoint).resolve()) or not record['greedy']
             or record['attention'] != 'ps' or record['window'] != state['window']
-            or record['window'] != metadata['window'] or record['board_seed'] != state['board_seed']):
+            or record['window'] < 1 or record['board_seed'] != state['board_seed']):
         raise ValueError('Intervention source is not a greedy PS rollout of this exact checkpoint and board')
     keys = ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')
     protocol = {key: record.get(key) for key in keys}
@@ -247,8 +247,8 @@ def main():
         parser.error('Use at least one stochastic sample in addition to the greedy branch')
     checkpoint = Path(args.checkpoint)
     metadata = json.loads((checkpoint / 'experiment.json').read_text())
-    if metadata['policy_version'] <= 0 or metadata['window'] != 1024:
-        raise ValueError('Use a selected trained PS checkpoint at the frozen window')
+    if metadata['policy_version'] <= 0 or not isinstance(metadata['window'], int) or metadata['window'] < 1:
+        raise ValueError('Use a selected trained PS checkpoint with a positive training window')
     if Path(args.reference).name != '768f209d9ea81521153ed38c47d515654e938aea':
         raise ValueError('Use the immutable original tokenizer/EOS snapshot')
     if metadata['model_revision'] != Path(args.reference).name:
@@ -283,6 +283,7 @@ def main():
     for state in pending:
         started = time.perf_counter()
         row = dict(state, checkpoint=str(checkpoint.resolve()), samples=args.samples,
+                   checkpoint_training_window=metadata['window'], evaluation_window=state['window'],
                    state_sha256=hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest())
         if 'edits' in state:
             if edit_size(state['edits']) != edit_size(state['sham_edits']):
