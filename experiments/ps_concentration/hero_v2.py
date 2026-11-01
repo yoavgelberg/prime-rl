@@ -49,6 +49,9 @@ class HeroConfig:
     warmup_updates: int = 8
     schedule_updates: int | None = None
     minimum_lr_fraction: float = .2
+    continuation_start_update: int | None = None
+    continuation_warmup_updates: int = 8
+    continuation_initial_lr: float = 4e-7
     clip_ratio: float = .2
     kl_coefficient: float = .01
     entropy_coefficient: float = .001
@@ -73,6 +76,9 @@ class HeroConfig:
             raise ValueError('Keep the accepted memory task and thinking budget')
         if self.schedule_updates is not None and self.schedule_updates <= self.warmup_updates:
             raise ValueError('The fixed learning-rate horizon must exceed warmup')
+        if self.continuation_start_update is not None and (self.continuation_start_update < 0
+                or self.continuation_warmup_updates < 1 or not 0 < self.continuation_initial_lr <= self.learning_rate):
+            raise ValueError('Continuation warmup needs a positive duration and an initial rate below its target')
         if self.boards % self.trainers or self.group_size < 2 or self.action_token_limit < 1:
             raise ValueError('Every trainer needs complete groups and a finite answer budget')
         if min(self.learning_rate,self.kl_coefficient,self.entropy_coefficient,self.denominator) <= 0:
@@ -168,10 +174,17 @@ def identity(config):
         native_teacher_strict_parity_proven=False)
     if config.schedule_updates is not None:
         result['lr_schedule_updates'] = config.schedule_updates
+    if config.continuation_start_update is not None:
+        result['continuation_lr_schedule'] = dict(start_update=config.continuation_start_update,
+            warmup_updates=config.continuation_warmup_updates, initial_lr=config.continuation_initial_lr,
+            target_lr=config.learning_rate, after_warmup='constant')
     return result
 
 
 def learning_rate(config, update):
+    if config.continuation_start_update is not None:
+        fraction = min(1., max(0., (update-config.continuation_start_update)/config.continuation_warmup_updates))
+        return config.continuation_initial_lr + fraction*(config.learning_rate-config.continuation_initial_lr)
     horizon = config.schedule_updates or config.updates
     progress = min(1., max(0., (update-config.warmup_updates)/max(1, horizon-config.warmup_updates)))
     decay = config.minimum_lr_fraction+(1-config.minimum_lr_fraction)*(1+math.cos(math.pi*progress))/2
