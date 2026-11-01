@@ -46,3 +46,22 @@ def test_exact_kl_avoids_sampled_exponential_outlier():
 def test_exact_kl_validates_vocabulary_shape():
     with pytest.raises(ValueError,match='same token vocabulary'):
         token_objective(torch.zeros(2,3),torch.tensor([0,1]),torch.zeros(2,2),torch.zeros(2),0.)
+
+
+def test_scheduled_kl_migration_is_explicit_and_cannot_relabel_past_updates():
+    from dataclasses import replace
+    from .hero_v2 import identity,kl_estimator,validate_resume_identity
+    from .test_hero_v2 import config
+    old=config()
+    new=replace(old,source_sha256='b'*64,exact_kl_start_update=215,
+        accepted_resume_sources=('a'*64,),accepted_kl_schedule_sources=('a'*64,))
+    assert kl_estimator(new,214)=='k3' and kl_estimator(new,215)=='categorical'
+    validate_resume_identity(identity(old),new,policy_version=210)
+    for version in (None,215,220):
+        with pytest.raises(ValueError,match='Migration cannot'):
+            validate_resume_identity(identity(old),new,policy_version=version)
+    with pytest.raises(ValueError,match='Migration cannot'):
+        validate_resume_identity(identity(old),replace(new,accepted_kl_schedule_sources=()),policy_version=210)
+    with pytest.raises(ValueError,match='Migration cannot'):
+        validate_resume_identity(identity(old),replace(new,learning_rate=1e-5),policy_version=210)
+    validate_resume_identity(identity(new),new,policy_version=220)

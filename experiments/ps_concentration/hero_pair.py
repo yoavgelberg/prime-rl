@@ -17,7 +17,7 @@ from .hero_exports import file_hash, verify as verify_export
 from .hero_finish import execute_conditions, require_idle_devices
 from .hero_policy_archive import preserve as preserve_policy
 from .hero_telemetry import preserve as preserve_telemetry
-from .hero_v2 import HeroConfig, identity, read, utc, write
+from .hero_v2 import HeroConfig, identity, read, utc, write, validate_resume_identity
 
 
 def device_groups(devices):
@@ -39,7 +39,7 @@ def validate_resume(config):
     run = Path(config.output)
     sidecar = read(run / 'checkpoints/latest.pt.json')
     if sidecar['identity'] != identity(config):
-        raise ValueError('Resume the exact declared branch identity')
+        validate_resume_identity(sidecar['identity'], config, policy_version=sidecar['policy_version'])
     if (run / 'state.json').exists() and read(run / 'state.json')['policy_version'] != sidecar['policy_version']:
         raise ValueError('Latest committed branch update lacks its exact optimizer snapshot; preserve and diagnose')
     if (run / 'checkpoints/latest.pt').stat().st_size != sidecar['bytes']:

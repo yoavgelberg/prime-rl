@@ -65,9 +65,16 @@ class HeroConfig:
     revision: str = '768f209d9ea81521153ed38c47d515654e938aea'
     defer_native_logs: bool = False
     accepted_resume_sources: tuple[str, ...] = ()
+    exact_kl_start_update: int | None = None
+    accepted_kl_schedule_sources: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, 'accepted_resume_sources', tuple(self.accepted_resume_sources))
+        object.__setattr__(self, 'accepted_kl_schedule_sources', tuple(self.accepted_kl_schedule_sources))
+        if self.exact_kl_start_update is not None and self.exact_kl_start_update < 1:
+            raise ValueError('Exact KL needs a positive explicit activation update')
+        if any(len(value) != 64 for value in self.accepted_kl_schedule_sources):
+            raise ValueError('KL migration sources must be reviewed SHA256 digests')
         if self.gpus not in (4, 8) or self.boards != 16 or self.group_size != 8:
             raise ValueError('Hero uses16boards×8rollouts with4or8allocatedGPUs')
         if Path(self.model).name != self.revision or len(self.source_sha256) != 64:
@@ -178,6 +185,9 @@ def identity(config):
         result['continuation_lr_schedule'] = dict(start_update=config.continuation_start_update,
             warmup_updates=config.continuation_warmup_updates, initial_lr=config.continuation_initial_lr,
             target_lr=config.learning_rate, after_warmup='constant')
+    if config.exact_kl_start_update is not None:
+        result['kl_estimator_schedule'] = dict(before='sampled_k3',
+            start_update=config.exact_kl_start_update, after='exact_categorical')
     return result
 
 
@@ -191,14 +201,24 @@ def learning_rate(config, update):
     return config.learning_rate * min(update/config.warmup_updates, 1.) * decay
 
 
-def validate_resume_identity(saved, config):
+def kl_estimator(config, update):
+    return ('categorical' if config.exact_kl_start_update is not None
+        and update >= config.exact_kl_start_update else 'k3')
+
+
+def validate_resume_identity(saved, config, *, policy_version=None):
     expected = identity(config)
     if saved == expected:
         return
     if saved.get('source_sha256') not in config.accepted_resume_sources:
         raise ValueError('Checkpoint source differs without an explicitly reviewed source migration')
-    if saved | dict(source_sha256=expected['source_sha256']) != expected:
-        raise ValueError('Source migration cannot change any model/controller/objective/optimizer identity field')
+    migrated = saved | dict(source_sha256=expected['source_sha256'])
+    if ('kl_estimator_schedule' not in saved and config.exact_kl_start_update is not None
+            and saved.get('source_sha256') in config.accepted_kl_schedule_sources
+            and policy_version is not None and policy_version < config.exact_kl_start_update):
+        migrated['kl_estimator_schedule'] = expected['kl_estimator_schedule']
+    if migrated != expected:
+        raise ValueError('Migration cannot change undeclared model/controller/objective/optimizer identity fields')
 
 
 def specs(config, update, permutation):
@@ -313,12 +333,12 @@ def trainer_main(config, rank, port):
     latest = root / 'checkpoints/latest.pt'
     if latest.exists():
         state = torch.load(latest, map_location='cpu', weights_only=True)
-        validate_resume_identity(state['identity'], config)
+        validate_resume_identity(state['identity'], config, policy_version=state['policy_version'])
         if state['identity'] != identity(config):
             write(root / f'source-migration-{os.environ["SLURM_JOB_ID"]}-{rank}.json', dict(
                 policy_version=state['policy_version'], old_identity=state['identity'],
                 new_identity=identity(config), approved_sources=config.accepted_resume_sources,
-                scope='Resume identical model/optimizer/RNG; only reviewed implementation source changes'))
+                scope='Restore identical model/optimizer/RNG; reviewed source and explicitly declared future KL schedule only'))
         policy.load_state_dict(state['model'], strict=True)
         optimizer.load_state_dict(state['optimizer'])
         for values in optimizer.state.values():
@@ -440,7 +460,7 @@ def trainer_main(config, rank, port):
                     if sum(record['loss_mask']) != row['generated_tokens']:
                         raise ValueError('Every sampled token must contribute exactly once')
                     values = trajectory_backward(policy, reference, record, advantage, config,
-                        adapters=(actor_adapter, ref_adapter))
+                        adapters=(actor_adapter, ref_adapter), kl_estimator=kl_estimator(config, update))
                     metrics.append(values)
                     write(node / f'trainer-{rank}/progress.json', dict(update=update,
                         board=command['board'], episode=row['episode_id'], metrics=values, utc=utc()))
@@ -662,6 +682,7 @@ def coordinator(config, config_path):
                 peak_training_allocated_bytes=max(t['peak_allocated_bytes'] for t in train),
                 actor_concurrency_per_gpu=config.live_games,actor_queue_per_gpu=config.batch_size//config.actors,
                 reference_kl_enabled=True)
+            metrics['exact_categorical_kl_active'] = kl_estimator(config, update) == 'categorical'
             write(root/f'update-metrics/update-{update:04d}.json',dict(metrics=metrics,trainer=train,steps=steps,
                 actor_weights=weight,episode_ids=[r['episode_id'] for r in rows]))
             with (root/'episodes.jsonl').open('a') as handle:
