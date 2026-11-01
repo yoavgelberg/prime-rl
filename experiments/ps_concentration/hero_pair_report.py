@@ -3,12 +3,20 @@
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
 
 from .hero_exports import file_hash
 from .hero_pair_final import condition_result
 from .hero_v2 import read, utc, write
 from .rng_report import analyze_condition, paired_bootstrap
+
+
+def reward_columns(condition, *, format_penalty, invalid_penalty):
+    rows = condition['rows']
+    return dict(mean_unshaped_efficiency_reward=condition['mean_return'],
+        mean_shaped_reward=math.fsum(row['training_return'] - format_penalty * row['format_errors']
+            - invalid_penalty * row['invalid_actions'] for row in rows) / len(rows))
 
 
 def training_rows(plan):
@@ -109,6 +117,10 @@ def report(final_path, output, memory):
         raise ValueError('Report requires the frozen paired experiment plan')
     output.mkdir(parents=True, exist_ok=True)
     conditions = [condition_result(entry) for entry in final['conditions'] if entry['split'] != 'intervention']
+    training = read(Path(plan['parent_run']) / 'resolved_config.json')
+    for condition in conditions:
+        condition.update(reward_columns(condition, format_penalty=training['format_penalty'],
+            invalid_penalty=training['invalid_penalty']))
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(read(Path(plan['parent_run']) / 'resolved_config.json')['model'])
     for condition in conditions:
@@ -118,7 +130,8 @@ def report(final_path, output, memory):
     delta = comparison(conditions)
     curve, sources = training_rows(plan)
     table(output / 'training-curve.csv', curve, list(curve[0]))
-    fields = ['name', 'policy_version', 'attention', 'window', 'episodes', 'mean_return', 'mean_pairs',
+    fields = ['name', 'policy_version', 'attention', 'window', 'episodes', 'mean_return',
+        'mean_unshaped_efficiency_reward', 'mean_shaped_reward', 'mean_pairs',
         'matched_fraction', 'completion_rate', 'mean_attempts', 'mean_attempts_to_completion',
         'completed_only_mean_attempts', 'completed_only_denominator', 'format_errors', 'format_error_rate',
         'native_invalid_actions', 'generated_tokens', 'raw_transcript_tokens',
@@ -162,12 +175,12 @@ def report(final_path, output, memory):
     write(output / 'results.json', result)
     lines = ['# Paired compressed-memory continuation results', '',
         'One shared seed11parent,128updates atW1024,then64matched additional updates perW1024/W256branch. The branches are not independent seed replications.', '',
-        '| Policy | Eval attention | Pairs/8 | Responses | Efficiency reward |',
-        '|---|---|---:|---:|---:|']
+        '| Policy | Eval attention | Pairs/8 | Responses | Efficiency reward | Reward incl. errors |',
+        '|---|---|---:|---:|---:|---:|']
     for row in conditions:
         if row['split'] == 'test' and row['expected_boards'] == 512:
             lines.append(f'|{row["name"]}(v{row["policy_version"]})|{row["attention"]} W{row["window"]}|'
-                f'{row["mean_pairs"]:.3f}|{row["mean_attempts"]:.2f}|{row["mean_return"]:+.4f}|')
+                f'{row["mean_pairs"]:.3f}|{row["mean_attempts"]:.2f}|{row["mean_return"]:+.4f}|{row["mean_shaped_reward"]:+.4f}|')
     lines.extend(['', f'W256-minus-W1024continuation under the sameW256mask: {delta["mean_difference"]:+.4f} efficiency reward, '
         f'95% paired board-bootstrap interval {delta["ci95"]}. This interval does not measure training-seed variability.', '',
         f'Recovery relative to the W1024control evaluated with full history: {delta["recovery"]}; raw full-reference gap {delta["full_reference_gap"]:+.4f}.', '',
