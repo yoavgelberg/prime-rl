@@ -45,6 +45,7 @@ class HeroConfig:
     adam_epsilon: float = 1e-8
     max_gradient_norm: float = 1.
     warmup_updates: int = 8
+    schedule_updates: int | None = None
     minimum_lr_fraction: float = .2
     clip_ratio: float = .2
     kl_coefficient: float = .01
@@ -60,12 +61,15 @@ class HeroConfig:
     accepted_resume_sources: tuple[str, ...] = ()
 
     def __post_init__(self):
+        object.__setattr__(self, 'accepted_resume_sources', tuple(self.accepted_resume_sources))
         if self.gpus not in (4, 8) or self.boards != 16 or self.group_size != 8:
             raise ValueError('Hero uses16boards×8rollouts with4or8allocatedGPUs')
         if Path(self.model).name != self.revision or len(self.source_sha256) != 64:
             raise ValueError('Pin the original model revision and captured implementation')
-        if self.window != 1024 or self.thinking_token_limit != 128 or self.max_responses != 96:
+        if self.window not in (64, 128, 256, 512, 1024, 2048, 4096) or self.thinking_token_limit != 128 or self.max_responses != 96:
             raise ValueError('Keep the accepted memory task and thinking budget')
+        if self.schedule_updates is not None and self.schedule_updates <= self.warmup_updates:
+            raise ValueError('The fixed learning-rate horizon must exceed warmup')
         if self.boards % self.trainers or self.group_size < 2 or self.action_token_limit < 1:
             raise ValueError('Every trainer needs complete groups and a finite answer budget')
         if min(self.learning_rate,self.kl_coefficient,self.entropy_coefficient,self.denominator) <= 0:
@@ -132,7 +136,7 @@ def wait(path, *, deadline=None):
 
 
 def identity(config):
-    return dict(task='RNGBench native textual Matching Pairs4x4', algorithm='GRPO',
+    result = dict(task='RNGBench native textual Matching Pairs4x4', algorithm='GRPO',
         variant='hero-v2', model_revision=config.revision, reference_checkpoint=config.model,
         source_sha256=config.source_sha256, attention='ps', window=config.window,
         group_size=config.group_size, global_batch_size=config.batch_size,
@@ -147,6 +151,16 @@ def identity(config):
         backend='FA4-PS native-effective BF16 teacher; independent vLLM actors',
         rollout_importance_correction='One fresh epoch,tokenwise PPO ratio clipping using actual native rollout logps',
         native_teacher_strict_parity_proven=False)
+    if config.schedule_updates is not None:
+        result['lr_schedule_updates'] = config.schedule_updates
+    return result
+
+
+def learning_rate(config, update):
+    horizon = config.schedule_updates or config.updates
+    progress = min(1., max(0., (update-config.warmup_updates)/max(1, horizon-config.warmup_updates)))
+    decay = config.minimum_lr_fraction+(1-config.minimum_lr_fraction)*(1+math.cos(math.pi*progress))/2
+    return config.learning_rate * min(update/config.warmup_updates, 1.) * decay
 
 
 def validate_resume_identity(saved, config):
@@ -409,9 +423,7 @@ def trainer_main(config, rank, port):
                 parameter.grad = torch.zeros_like(parameter)
             dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
         norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), config.max_gradient_norm, error_if_nonfinite=True)
-        progress = max(0., (update-config.warmup_updates)/max(1,config.updates-config.warmup_updates))
-        decay = config.minimum_lr_fraction+(1-config.minimum_lr_fraction)*(1+math.cos(math.pi*progress))/2
-        lr = config.learning_rate * min(update/config.warmup_updates,1.) * decay
+        lr = learning_rate(config, update)
         for group in optimizer.param_groups:
             group['lr'] = lr
         optimizer.step()
@@ -622,6 +634,7 @@ def coordinator(config, config_path):
                 training_episodes=update*config.batch_size,utc=utc()))
             wandb.log({**{f'train/{k}':v for k,v in metrics.items() if isinstance(v,(int,float,bool))},
                 'train/avg_reward':metrics['mean_return'],'train/avg_native_reward':metrics['mean_native_return'],
+                'train/avg_unshaped_efficiency_reward':metrics['mean_native_return'],
                 'train/update':update})
             print(json.dumps(dict(event='train',**metrics)),flush=True)
             old=node/f'weights-{update-2:04d}.pt'

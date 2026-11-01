@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from .hero_objective import advantages, shaped_return, token_objective
-from .hero_v2 import HeroConfig, identity, reusable_episode, validate_resume_identity
+from .hero_v2 import HeroConfig, identity, learning_rate, reusable_episode, validate_resume_identity
 
 
 def config(gpus=8):
@@ -87,6 +87,19 @@ def test_four_and_eight_gpu_layouts_keep_ml_identity_and_full_batch_capacity():
     assert eight.live_games==32 and four.live_games==64
     assert eight.live_games*eight.actors==four.live_games*four.actors==128
     assert identity(eight)==identity(four)
+
+
+def test_continuations_preserve_parent_schedule_and_terminal_lr():
+    parent = config()
+    continued = replace(parent, updates=192, schedule_updates=128)
+    for update in (1, 8, 32, 64, 127, 128):
+        assert learning_rate(continued, update) == learning_rate(parent, update)
+    assert learning_rate(continued, 129) == pytest.approx(4e-7)
+    assert learning_rate(continued, 192) == learning_rate(continued, 128)
+    assert identity(continued)['lr_schedule_updates'] == 128
+    small = replace(continued, window=256, gpus=4)
+    assert learning_rate(small, 192) == learning_rate(continued, 192)
+    assert identity(small) | {'window': 1024} == identity(replace(continued, gpus=4))
 
 
 def test_completed_episode_reuse_requires_same_policy_controller_and_unchanged_tokens(tmp_path):
