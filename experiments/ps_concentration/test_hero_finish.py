@@ -109,6 +109,35 @@ def test_partial_condition_resumes_with_actual_gpu_count(hero_selection_run, tmp
     assert completed_condition(entry)
 
 
+def test_full_evaluation_resource_overrides_keep_the_canonical_configuration(hero_selection_run, tmp_path):
+    plan, _ = hero_selection_run
+    entry = json.loads(plan.read_text())['layouts']['4'][-1]
+    summary = Path(entry['summary'])
+    original = summary.read_text()
+    summary.unlink()
+    canonical = entry['argv'].copy()
+    calls = []
+
+    def execute(argv):
+        calls.append(argv)
+        summary.write_text(original)
+
+    execute_conditions([entry], tmp_path / 'executor', gpus=4, invoke=execute,
+        evaluation_concurrency=16, full_kv_token_bound=53568)
+    assert calls[0][-6:] == ['--gpus', '4', '--evaluation-concurrency', '16', '--full-kv-token-bound', '53568']
+    assert entry['argv'] == canonical and completed_condition(entry)
+
+
+def test_completed_evaluation_accepts_changed_physical_concurrency(hero_selection_run):
+    plan, _ = hero_selection_run
+    entry = json.loads(plan.read_text())['layouts']['4'][-1]
+    path = Path(entry['summary']).parent / 'evaluation-protocol.json'
+    protocol = json.loads(path.read_text())
+    protocol['config']['evaluation_concurrency'] = 16
+    save(path, protocol)
+    assert completed_condition(entry)
+
+
 def test_window_sweep_completion_uses_the_actual_evaluation_window(hero_selection_run):
     plan, _ = hero_selection_run
     entry = json.loads(plan.read_text())['layouts']['4'][-1]

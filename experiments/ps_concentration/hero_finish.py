@@ -141,7 +141,7 @@ def completed_condition(entry):
     return True
 
 
-def execute_conditions(entries, output, *, gpus, invoke=None):
+def execute_conditions(entries, output, *, gpus, invoke=None, evaluation_concurrency=None, full_kv_token_bound=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     for entry in entries:
@@ -151,6 +151,10 @@ def execute_conditions(entries, output, *, gpus, invoke=None):
         if completed_condition(entry):
             continue
         argv = [sys.executable, *entry['argv'][1:], '--gpus', str(gpus)]
+        if evaluation_concurrency is not None:
+            argv.extend(['--evaluation-concurrency', str(evaluation_concurrency)])
+        if full_kv_token_bound is not None:
+            argv.extend(['--full-kv-token-bound', str(full_kv_token_bound)])
         write(output / 'live.json', dict(utc=datetime.now(timezone.utc).isoformat(),
             condition=entry['condition'], argv=argv, physical_gpus=gpus, status='EVALUATING'))
         if invoke is None:

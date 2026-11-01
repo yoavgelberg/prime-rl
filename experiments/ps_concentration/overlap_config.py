@@ -104,6 +104,27 @@ def evaluation_gpu_count(config, gpus, *, mode):
     return replace(config, gpus=gpus)
 
 
+FULL_EVALUATION_TOKEN_BOUND = 53568
+FULL_EVALUATION_CONCURRENCY = 16
+
+
+def evaluation_resources(config, gpus, *, mode, attention, concurrency=None, full_kv_token_bound=None):
+    """Validate the native 96-response transcript bound before changing full evaluation resources."""
+    config = evaluation_gpu_count(config, gpus, mode=mode)
+    if concurrency is None and full_kv_token_bound is None:
+        return config, None
+    if mode != 'evaluate' or attention != 'full':
+        raise ValueError('Audited resource overrides are full-evaluation-only')
+    if (type(concurrency) is not int or not 1 <= concurrency <= FULL_EVALUATION_CONCURRENCY
+            or full_kv_token_bound != FULL_EVALUATION_TOKEN_BOUND):
+        raise ValueError('Use the audited full-evaluation concurrency and KV token bound')
+    if (config.thinking_token_limit != 128 or config.action_token_limit != 32
+            or config.thinking_budget_transition != '\n\nOkay, time to give the answer.</think>\n\n'
+            or config.max_responses != 96 or config.transcript_cap != 262144):
+        raise ValueError('The full-evaluation KV bound requires the audited 128/32-token controller')
+    return replace(config, evaluation_concurrency=concurrency), full_kv_token_bound
+
+
 def permutation(seed):
     return np.random.default_rng(seed).permutation(1000000)
 

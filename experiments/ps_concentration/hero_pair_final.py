@@ -17,7 +17,7 @@ from .hero_pair_plan import CONTINUATION_VERSIONS
 from .hero_policy_archive import hydrate, verify_policy
 from .hero_protocol import inference_config
 from .hero_v2 import HeroConfig, identity, read, utc, write
-from .overlap_config import RunConfig, SPLITS
+from .overlap_config import FULL_EVALUATION_CONCURRENCY, FULL_EVALUATION_TOKEN_BOUND, RunConfig, SPLITS
 from .rng_report import load_condition
 
 
@@ -185,8 +185,14 @@ def prepare_final(plan_path, selection, output, *, gpus):
 
 def execute_entries(plan_path, entries, output, *, gpus):
     for entry in entries:
+        metadata_available = not entry['policy_version'] or (Path(entry['checkpoint']) / 'experiment.json').exists()
+        if metadata_available and completed_condition(entry):
+            condition_result(entry)
+            continue
         hydrate_condition(plan_path, entry)
-        execute_conditions([entry], output, gpus=gpus)
+        resources = dict(evaluation_concurrency=FULL_EVALUATION_CONCURRENCY,
+            full_kv_token_bound=FULL_EVALUATION_TOKEN_BOUND) if entry['attention'] == 'full' else {}
+        execute_conditions([entry], output, gpus=gpus, **resources)
         condition_result(entry)
 
 

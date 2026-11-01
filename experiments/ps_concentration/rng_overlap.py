@@ -15,7 +15,7 @@ from prime_rl.orchestrator.ps_games import GameRolloutRunner, worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 
 from .control import handoff_requested
-from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, evaluation_gpu_count, permutation, protocol_lock, training_specs
+from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, evaluation_resources, permutation, protocol_lock, training_specs
 from .rank_collection import RankCollector
 
 
@@ -35,17 +35,22 @@ def append_json(path, value):
         handle.write(json.dumps(value, allow_nan=False) + '\n')
 
 
-def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False):
+def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False, full_kv_token_bound=None):
     stream = config.stream()
     maximum = config.evaluation_concurrency if evaluation else config.concurrency
     hf = json.loads((Path(config.model) / 'config.json').read_text())
     head = hf.get('head_dim', hf['hidden_size'] // hf['num_attention_heads'])
     bytes_per_token = hf['num_hidden_layers'] * hf['num_key_value_heads'] * head * 4
+    if full_kv_token_bound is not None:
+        evaluation_resources(config, None, mode='evaluate' if evaluation else 'train',
+            attention=attention, concurrency=maximum, full_kv_token_bound=full_kv_token_bound)
     if attention == 'full':
-        if maximum > 4:
+        if maximum > 4 and full_kv_token_bound is None:
             raise ValueError('Full-context evaluation requires at most four live games per B200')
         stream = replace(stream, max_requests=1, window=config.transcript_cap)
-        cache = bytes_per_token * (math.ceil(config.transcript_cap / 128) + 1) * 128 * maximum
+        reservation_tokens = config.transcript_cap if full_kv_token_bound is None else full_kv_token_bound
+        cache = bytes_per_token * (math.ceil(reservation_tokens / 128) + 1) * 128 * maximum
+        cache = max(cache, bytes_per_token * (math.ceil(config.transcript_cap / 128) + 1) * 128)
     else:
         cache = max(2 * 1024**3, bytes_per_token * (512 + config.window + 256) * maximum)
     return dict(model=checkpoint or config.model, dtype='bfloat16', skip_tokenizer_init=True,
@@ -62,7 +67,7 @@ def engine_options(config, *, attention='ps', checkpoint=None, evaluation=False)
         cudagraph_capture_sizes=[size for size in (1, 2, 4, 8, 16, 32, 64) if size <= maximum])
 
 
-def make_engine(config, *, attention='ps', checkpoint=None, evaluation=False):
+def make_engine(config, *, attention='ps', checkpoint=None, evaluation=False, full_kv_token_bound=None):
     from vllm.engine.arg_utils import AsyncEngineArgs
     from vllm.v1.engine.async_llm import AsyncLLM
     from prime_rl.inference.vllm.ps_fa4 import register
@@ -70,7 +75,8 @@ def make_engine(config, *, attention='ps', checkpoint=None, evaluation=False):
     register()
     for name in ('VLLM_ATTENTION_BACKEND', 'VLLM_FLASH_ATTN_VERSION'):
         os.environ.pop(name, None)
-    options = engine_options(config, attention=attention, checkpoint=checkpoint, evaluation=evaluation)
+    options = engine_options(config, attention=attention, checkpoint=checkpoint, evaluation=evaluation,
+        full_kv_token_bound=full_kv_token_bound)
     write_json(Path(config.output) / f'engine-{attention}-{os.environ.get("SLURM_JOB_ID", "local")}.json', options)
     return AsyncLLM.from_engine_args(AsyncEngineArgs(**options))
 
@@ -415,13 +421,17 @@ def main():
     parser.add_argument('--split', choices=['screening', 'validation', 'test', 'larger', 'intervention'], default='screening')
     parser.add_argument('--checkpoint')
     parser.add_argument('--gpus', type=int, choices=(1, 2, 4, 8), help='Physical evaluation layout; preserves board seeds and controller')
+    parser.add_argument('--evaluation-concurrency', type=int, help='Audited full-evaluation games per GPU')
+    parser.add_argument('--full-kv-token-bound', type=int, help='KV reservation bound; preserves the model context limit')
     parser.add_argument('--competence')
     parser.add_argument('--defer-evaluation', action='store_true', help='Start training without evaluation; evaluate separately when time remains')
     parser.add_argument('--window', type=int, help='Evaluation window sweep; training remains W=1024')
     parser.add_argument('--count', type=int, help='Evaluate the first N fixed split boards, e.g. 128 for window sweeps')
     args = parser.parse_args()
     config = RunConfig(**json.loads(Path(args.config).read_text()))
-    config = evaluation_gpu_count(config, args.gpus, mode=args.mode)
+    config, full_kv_token_bound = evaluation_resources(config, args.gpus, mode=args.mode,
+        attention=args.attention, concurrency=args.evaluation_concurrency,
+        full_kv_token_bound=args.full_kv_token_bound)
     if args.window is not None:
         config = replace(config, window=args.window)
     if args.mode == 'train' and args.count is not None:
@@ -429,7 +439,8 @@ def main():
     if args.defer_evaluation and args.mode != 'train':
         parser.error('--defer-evaluation applies to training only')
     lock_run(config)
-    write_json(Path(config.output) / 'execution-options.json', dict(evaluation_deferred=args.defer_evaluation))
+    write_json(Path(config.output) / 'execution-options.json', dict(evaluation_deferred=args.defer_evaluation,
+        evaluation_concurrency_override=args.evaluation_concurrency, full_kv_token_bound=full_kv_token_bound))
     competence = None
     if args.mode == 'train' and not args.defer_evaluation:
         if not args.competence:
@@ -446,7 +457,7 @@ def main():
     if monitor is not None and competence is not None:
         log_metrics(monitor, 'reference_full', competence, 0)
     engine = make_engine(config, attention=args.attention, checkpoint=args.checkpoint,
-                         evaluation=args.mode == 'evaluate')
+                         evaluation=args.mode == 'evaluate', full_kv_token_bound=full_kv_token_bound)
     try:
         if args.mode == 'train':
             if args.attention != 'ps' or args.checkpoint:

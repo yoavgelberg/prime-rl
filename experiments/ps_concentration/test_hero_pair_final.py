@@ -73,6 +73,16 @@ def test_both_branches_must_finish_before_any_selection(paired):
         final.completed_branches(plan)
 
 
+def test_complete_conditions_reuse_verified_records_without_rehydrating_models(validated, tmp_path, monkeypatch):
+    path, _, validation = validated
+
+    def unnecessary_restore(*args, **kwargs):
+        raise AssertionError('A completed condition should reuse its validated records and metadata')
+
+    monkeypatch.setattr(final, 'hydrate_condition', unnecessary_restore)
+    final.execute_entries(path, validation['conditions'], tmp_path / 'execution', gpus=4)
+
+
 def test_validation_preserves_parent_provenance_and_selects_earliest_tie(validated):
     _, plan, validation = validated
     selected = final.select(validation)

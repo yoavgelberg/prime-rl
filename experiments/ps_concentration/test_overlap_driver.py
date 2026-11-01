@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from experiments.ps_concentration.overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, permutation, training_specs
+from experiments.ps_concentration.overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_resources, evaluation_specs, permutation, training_specs
 from experiments.ps_concentration import rng_overlap as driver
 
 
@@ -66,6 +66,55 @@ def test_engine_memory_and_position_configuration(tmp_path):
     assert full['additional_config']['ps_streaming']['window'] == cfg.transcript_cap
     with pytest.raises(ValueError, match='four live'):
         driver.engine_options(cfg, attention='full', evaluation=True)
+
+
+def test_audited_full_resources_preserve_policy_and_seed_plan(tmp_path):
+    cfg = config(tmp_path, evaluation_concurrency=4, thinking_token_limit=128,
+        action_token_limit=32, thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n')
+    current, bound = evaluation_resources(cfg, 4, mode='evaluate', attention='full',
+        concurrency=16, full_kv_token_bound=53568)
+    assert current.scientific_identity() == cfg.scientific_identity()
+    original = evaluation_specs(cfg, 'test', 'full-u0', count=128)
+    changed = evaluation_specs(current, 'test', 'full-u0', count=128)
+    assert [{k: v for k, v in row.items() if k != 'rank'} for row in original] == [
+        {k: v for k, v in row.items() if k != 'rank'} for row in changed]
+    options = driver.engine_options(current, attention='full', evaluation=True, full_kv_token_bound=bound)
+    assert options['max_num_seqs'] == 16
+    assert options['kv_cache_memory_bytes'] == 126835752960
+    assert options['max_num_batched_tokens'] == 1024
+    assert options['max_model_len'] == cfg.transcript_cap == 262144
+    assert options['hf_overrides']['sliding_window'] == cfg.transcript_cap
+    assert options['additional_config']['ps_streaming']['window'] == cfg.transcript_cap
+    assert options['cudagraph_capture_sizes'] == [1, 2, 4, 8, 16]
+    assert options['kv_cache_memory_bytes'] < driver.engine_options(cfg, attention='full', evaluation=True)['kv_cache_memory_bytes']
+
+
+def test_small_full_layout_still_supports_one_declared_model_context(tmp_path):
+    cfg = config(tmp_path, evaluation_concurrency=1, thinking_token_limit=128,
+        action_token_limit=32, thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n')
+    options = driver.engine_options(cfg, attention='full', evaluation=True, full_kv_token_bound=53568)
+    assert options['max_model_len'] == 262144 and options['max_num_seqs'] == 1
+    assert options['kv_cache_memory_bytes'] == 38673580032
+
+
+@pytest.mark.parametrize('change', [dict(mode='train'), dict(attention='ps'), dict(concurrency=32),
+    dict(full_kv_token_bound=53569), dict(concurrency=None), dict(full_kv_token_bound=None)])
+def test_full_resource_override_rejects_unaudited_layouts(tmp_path, change):
+    cfg = config(tmp_path, thinking_token_limit=128, action_token_limit=32,
+        thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n')
+    options = dict(mode='evaluate', attention='full', concurrency=16, full_kv_token_bound=53568)
+    with pytest.raises(ValueError, match='full-evaluation'):
+        evaluation_resources(cfg, None, **(options | change))
+
+
+@pytest.mark.parametrize('change', [dict(thinking_token_limit=None, thinking_budget_transition=None), dict(thinking_token_limit=129),
+    dict(action_token_limit=64), dict(thinking_budget_transition=None)])
+def test_full_resource_bound_cannot_be_used_with_another_controller(tmp_path, change):
+    cfg = config(tmp_path, thinking_token_limit=128, action_token_limit=32,
+        thinking_budget_transition='\n\nOkay, time to give the answer.</think>\n\n')
+    with pytest.raises(ValueError, match='128/32-token controller'):
+        evaluation_resources(replace(cfg, **change), None, mode='evaluate', attention='full',
+            concurrency=16, full_kv_token_bound=53568)
 
 
 def test_larger_split_doubles_cards_and_attempts_without_changing_training(tmp_path):
