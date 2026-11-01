@@ -53,6 +53,7 @@ def prepare(parent_run, output, source_sha256, node_base):
         scope='User-authorized exploratory extension after partial test inspection; old192 study/selection remains frozen',
         storage='Active full states in node RAM; original192 remains durable; versioned pins require verified off-node backup',
         ml='Both arms fork the same W1024 model/Adam/RNG192, same ordered boards and generation RNGs, global128/G8; only W differs')
+    plan = json.loads(json.dumps(plan))
     plan_path = output / 'plan.json'
     if plan_path.exists():
         if read(plan_path) != plan:
