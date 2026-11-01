@@ -1,6 +1,6 @@
 # Native Concentration memory RL
 
-**Current experiment:** native RNG-Bench Matching Pairs4×4 with Qwen3-4B-Thinking, PS-only GRPO and backward during generation. Use [the active run instructions](OVERLAP_RUN.md). The POPGym/Instruct commands and results below describe the earlier implementation.
+**Current experiment:** native RNG-Bench Matching Pairs 4×4 with Qwen3-4B-Thinking, PS-only GRPO, independent native vLLM actors, and a joint FA4 prefix-sliding learner pass for policy loss, KL, and entropy. Use [the hero v2 protocol](HERO_V2_RUN.md). [OVERLAP_RUN.md](OVERLAP_RUN.md) describes the stopped earlier run with backward during generation. The POPGym/Instruct commands and results below describe the original implementation.
 
 This experiment tests outcome-based adaptation to a fixed system prefix and bounded rolling attention. The neutral prompt permits scratch work but supplies no note format, examples, memory tools, or note-writing reward. Native observations, rewards, action-0 format fallback and transient mismatch observations are preserved.
 

@@ -1,77 +1,97 @@
 # Matching Pairs hero v2
 
-This run trains Qwen3-4B-Thinking-2507 from its original checkpoint on native RNG-Bench textual Matching Pairs4×4, the task authorized after earlier model/environment screening. It is separate from the original POPGym ConcentrationHard experiment. The earlier PS-GRPO checkpoint35 and its optimizer/RNG/logs remain preserved.
+The active experiment studies adaptation to bounded attention in native RNG-Bench textual Matching Pairs. It uses Qwen3-4B-Thinking-2507, a 4×4 board with eight pairs, and a limit of 96 attempted responses. The earlier POPGym/Instruct experiment and the stopped streaming-gradient run remain historical experiments; their settings and results must not be mixed with this run.
 
-Inside an existing regular yejin allocation with the assigned CUDA_VISIBLE_DEVICES:
+The starting model/tokenizer revision is `768f209d9ea81521153ed38c47d515654e938aea`. The native game revision is `e3d195e857727dfa3d4a96561be202098d67da83`. Native rules, observations, retries, and invalid-action consequences are preserved. Generated final answers use the native `Action: cD` format. The actual native score is pairs found. The reward used by training is defined below.
+
+The system prompt contains the native game instructions and explicit answer-format instructions, asks for brief thoughts, and states the thinking budget. It supplies no notebook format, memory demonstration, external memory, or note-writing reward. Native thinking is part of the sampled assistant text. The controller samples at most 128 thinking tokens, inserts `\n\nOkay, time to give the answer.</think>\n\n` when the budget is exhausted, then permits at most 32 sampled final-answer tokens. Evaluation uses the identical controller. The inserted transition is 11 tokens with the pinned tokenizer. It is context with zero direct policy loss. It does not count against the 128 sampled thinking tokens.
+
+## Attention and exact backward
+
+Only the initial system message and its fixed delimiters are pinned. Its observed prefix length is 439 tokens. The first board observation belongs to the rolling suffix. For a query at original position `i` outside the prefix, allowed keys satisfy `j < P` or `max(P,i-W+1) <= j <= i`. Original position IDs increase monotonically and pretrained RoPE settings are unchanged.
+
+Rollout retains streaming KV. It never repeatedly prefills a cropped prefix-plus-suffix transcript. Learners use each full recorded episode with the same PS mask, including losses before the first eviction. They retain backward dependencies through attention computations; no chunk-boundary detachment is used. Independent episodes occupy independent model requests and cannot attend across episode boundaries.
+
+The current learner uses [NativeTeacher](native_teacher.py), effective BF16 forward values, FP32 masters/Adam state, FA4 PS attention, and activation checkpointing. The actor forward/backward computes policy loss, sampled reference KL, and full-vocabulary entropy together. One frozen-reference forward supplies reference log probabilities. The current v2 implementation does not reuse gradients computed during generation. That is an approved implementation choice, not a restriction imposed by KL.
+
+Strict native-vLLM/teacher BF16 log-probability parity has not been established. The run retains actual native rollout log probabilities and logs teacher/rollout discrepancies and clipping. Do not describe this as passing the original strict numerical-parity gate or infer a measured speedup over another backend without comparable measurements. Exact attention/backward dependencies and floating-point agreement with native decoding are different properties.
+
+## Reward and loss
+
+For episode `k` on board `g`, let `m` be pairs found, `n` attempted responses, `f` format errors, and `v` native invalid actions. The two error counters are disjoint.
+
+\[
+R_{gk}=\frac{m_{gk}}8-\frac{n_{gk}}{96}-0.02f_{gk}-0.02v_{gk}.
+\]
+
+The metric historically called `avg_native_reward` is the unshaped efficiency reward `m/8-n/96`. It is not the game's native score. New continuation logs also expose `avg_unshaped_efficiency_reward`. `avg_reward` is the shaped reward above.
+
+Groups contain eight independent sampled trajectories from the same reset board. GRPO uses sample standard deviation, without a leave-one-out baseline:
+
+\[
+\bar R_g=\frac18\sum_{k=1}^8 R_{gk},\quad
+s_g=\sqrt{\frac17\sum_{k=1}^8(R_{gk}-\bar R_g)^2},\quad
+A_{gk}=\frac{R_{gk}-\bar R_g}{s_g+10^{-4}}.
+\]
+
+Zero-variance groups have zero task advantage. KL and entropy remain active in those groups. Every sampled scratch/action/EOS token receives its trajectory advantage. Environment text, role delimiters, and forced tokens have zero direct loss but remain differentiable context.
+
+For a sampled token, let `ell` be its current temperature-adjusted log probability, `ell_old` its stored native rollout log probability, and `ell_ref` the frozen reference log probability. Both policy/reference probabilities use temperature 0.6. Define
+
+\[
+q=\exp(\operatorname{clip}(\ell-\ell_{old},-20,20)),\qquad
+d=\operatorname{clip}(\ell_{ref}-\ell,-20,20),\qquad
+K_3=\exp(d)-1-d.
+\]
+
+With full-vocabulary entropy `H`, sampled-token mask `M`, global batch `B=128`, and the fixed inherited denominator `D=104*256=26624`, the minimized loss is
+
+\[
+\mathcal L=\frac1{BD}\sum_{g,k,t}M_{gkt}
+\left[-\min\left(q_{gkt}A_{gk},\operatorname{clip}(q_{gkt},0.8,1.2)A_{gk}\right)
++0.01K_{3,gkt}-0.001H_{gkt}\right].
+\]
+
+The denominator is not the trajectory's actual token count. One fresh on-policy rollout batch produces one optimizer step, with one epoch and no stale-batch reuse. Exact transformer backward does not differentiate through sampled discrete tokens or the game engine. See [hero_objective.py](hero_objective.py) for the implementation and logged per-generated-token statistics.
+
+## Optimizer and physical layout
+
+AdamW uses learning rate `2e-6`, betas `(0.9,0.95)`, epsilon `1e-8`, weight decay zero, and gradient norm clipping at 1. Warmup lasts eight updates. The parent then follows a cosine schedule to 20% of peak learning rate at update 128. Both continuations preserve that schedule horizon and clamp the terminal rate at `4e-7`; they do not restart warmup or rescale the cosine to 192.
+
+The parent uses eight B200s: four independent vLLM actors and four replicated learners. There are 16 distinct boards × eight rollouts = 128 trajectories per update, with 32 live games per actor GPU. Each four-B200 continuation uses two actors and two learners, retaining global batch 128 and group size eight, with 64 live games per actor GPU. The two continuations use disjoint sets of four GPUs on an eight-GPU node, or run sequentially on a four-GPU fallback. Gradients are summed with the same global denominator. Throughput, memory, and allocated GPU-hours must come from saved measurements.
+
+Use regular `yejin` only. Run/environment identities, complete dependency/revision locks, board permutations, rollout plans, generation RNGs, token/role/loss/position/log-probability records, per-update metrics, W&B URLs, full optimizer snapshots, and verified BF16 inference exports are saved by [hero_v2.py](hero_v2.py). Durable storage must cover both full continuation states and one temporary checkpoint write; checkpoint writes are serialized across branches. Policy exports use exact lossless archives with a shared full reference. No user-preserved checkpoint is silently discarded.
+
+## Approved continuation and evaluation protocol
+
+Finish the seed-11 W1024 parent at 128 updates. Run a short greedy evaluation on the same first 32 validation boards at W1024/512/256/128/64, plus original/full and parent/full references. W256 for subsequent training is predeclared; the short sweep does not select it. Fork the complete parent model, Adam, step, and RNG state into matched W1024 and W256 continuations. Give each 64 additional updates through 192, using identical fresh board order and generation seed derivation. The reference remains the original starting checkpoint under each arm's mask.
+
+Training samples a fixed permutation of board seeds 0–999999 without replacement. The seed is 11. Continuations use board indices 2048–3071 of that permutation, paired across arms. Validation uses seeds 1100000–1100127, final standard-board tests 2000000–2000511, larger boards 3000000–3000255, and intervention collection 4000000–4000511. Every new episode starts with an empty suffix and no previous board's text.
+
+Both branches must finish 192 updates and shut down before final checkpoint selection/evaluation. Select among 128/144/160/176/192 by complete 128-board greedy validation efficiency return under that branch's training window, with earlier ties. Parent 128 remains an explicitly labeled baseline. If selected, it is not a newly trained continuation checkpoint. Final tests never choose a checkpoint or training window.
+
+Evaluate the original model, parent 128, and both selected arms under PS256, PS1024, and full attention on all 512 final boards. The main continuation comparison is W256-trained versus W1024-trained, both evaluated under W256. The W1024 control was itself trained with prefix sliding; it is not a Full-RL control. The W256 arm is transfer from a W1024-trained parent, not training solely at W256 from the original model.
+
+Evaluate both selected arms across W64/128/256/512/1024/2048/4096 on the first 128 final boards. Evaluate parameter-scaled 4×8 boards under PS256 on the 256 larger-board seeds; these have eight ranks with four copies each, 16 pairs, and 192 attempted responses. This is a parameter-scaled RNG-Bench task, not POPGym ConcentrationHard. The common transcript cap is 262144 tokens.
+
+Report native pairs, efficiency return, completions, response counts with completed-only denominators, format/native invalids, generated and raw tokens, KV allocation scope, time, and total allocation cost. Score known-match utilization from complete native histories, binning the age of latest direct environment reveal; generated notes do not refresh that age. Bootstrap paired return differences 10000 times over board seeds. Both arms share one training seed and a parent; neither the 512 boards nor the two arms constitute independent training replications.
+
+Collect separate greedy intervention games under W256 for both selected arms. Retained explicit old-target associations must satisfy the protocol's reveal-age, eviction, scratch-only, and equal-token-length requirements. Compare identical cold rebuilds with unedited/swap/sham scratch work, and compare unedited rebuilds with ordinary streaming continuation. Count every qualified and untestable state. Fewer than 32 qualified states is insufficient for a textual-memory conclusion. Never relabel sampled training traces as greedy to enter this collection.
+
+Reports generate training-return, final-window, and reveal-age figures; main, size, and intervention tables; and 20 fixed-seed-order greedy transcripts per selected arm with eviction annotations. Good PS performance alone supports adaptation to bounded KV, not a claim that readable notes explain it.
+
+## Execution entry points
+
+Use immutable source captures and the resolved runtime environment. `CUDA_VISIBLE_DEVICES` must be the devices assigned by the regular-yejin allocation. The lease wrappers prepare dependencies, validate captures, and prevent duplicate campaign ownership; do not independently start a second coordinator for an active campaign.
 
 ```bash
-python -m experiments.ps_concentration.hero_v2 --config CONFIG.json
+python -m experiments.ps_concentration.hero_v2 --config RESOLVED_TRAIN_CONFIG.json
+python -m experiments.ps_concentration.hero_pair --plan FROZEN_PAIR_PLAN.json \
+  --gpus 8 --node-base UNIQUE_NODE_DIRECTORY --deadline ALLOCATION_END_EPOCH
+python -m experiments.ps_concentration.hero_pair_final --plan FROZEN_PAIR_PLAN.json \
+  --output POSTTRAIN_DIRECTORY --gpus 8
+python -m experiments.ps_concentration.hero_pair_report --final-plan FINAL_PLAN.json \
+  --memory MEMORY_DIRECTORY --output RESULTS_DIRECTORY
 ```
 
-CONFIG.json uses HeroConfig in hero_v2.py. The deployed launcher,captured sources,dependency locks and source manifests are retained at /hai/scratch/gelberg/ps/concentration. Output: rng-hero-v2-a1/ps-seed11. W&B: tech-ml/ps-memory/rng-4b-ps-grpo-s11-hero-v2-a1. Model revision:768f209d9ea81521153ed38c47d515654e938aea. Native environment revision:e3d195e857727dfa3d4a96561be202098d67da83.
-
-Eight GPUs use four independent single-GPU vLLM actors,each admitting32games,and four replicated FA4-PS learners. Four GPUs use two actors admitting64games each and two learners. Both layouts preserve128trajectories/update,16boards×8rollouts,seed derivation and optimizer settings. Completed groups dispatch to learner capacity while generation continues. Weights stay frozen throughout collection/accumulation; one gradient sum and optimizer step ends each batch. Actors that finish their entire share wait for that final policy barrier.
-
-Reward is pairs/8 minus attempted responses/96 minus0.02per format error minus0.02per native invalid action. The two error counters are disjoint. Advantages use the board-group mean and sample standard deviation plus1e-4; identical-return groups get zero task advantage. The loss combines tokenwise clipped GRPO (ratio clip0.2),sampled k3 KL coefficient0.01 and full-distribution entropy bonus0.001. All three terms sum sampled tokens and divide by128×26624; actual trajectory length is not the denominator. Stored native rollout likelihoods define the importance ratio. Log ratios are bounded to±20 for stability.
-
-Each trajectory has a frozen-reference forward and a joint actor forward/backward with layer checkpointing and a checkpointed output head. This path does not reuse generation-time gradients. Every sampled thinking/action token receives loss; forced transitions,observations and template tokens have zero direct loss while remaining differentiable context. Reference and policy preserve original RoPE frequencies and the exact PS dependency graph with W1024,system-onlyprefix and original increasing positions. Independent native-versus-teacher BF16 likelihood parity remains unresolved; saved metrics report mismatch and clipping instead of claiming strict parity.
-
-Generation uses temperature0.6,top-p1,no top-k,96responses,128sampled initial thinking tokens,then the existing11-token forced transition. A32sampled-token final-answer ceiling bounds post-transition output. The verified439-token system prefix explicitly requires one final Action: coordinate line,lowercase row+uppercase column,and no explanation or extra final-answer lines. No memory-note format or memory demonstrations are added. Streaming KV remains bounded by prefix+window.
-
-AdamW uses FP32 masters,learning rate2e-6,betas0.9/0.95,epsilon1e-8,no weight decay,gradient norm clip1,8-update warmup and cosine decay to20percent of peak over128updates. The frozen reference retains FP32 buffers. Full model/optimizer/RNG snapshots save asynchronously every8updates and at the allocation boundary/final update. BF16 candidates save every16updates on node-local storage; persist selected/final exports before releasing the allocation.
-
-Outputs include resolved configuration,dependency/revision locks,board permutation and generation seeds,complete compressed native traces/token records,per-update metrics and checkpoint metadata. Result files publish atomically. Recovery reuses only complete episodes with identical policy/seed/controller and verified token hashes; incomplete episodes restart while their logs remain preserved. Selected-checkpoint evaluation and memory interventions are separate work; sampled training gains alone do not establish causal textual memory.
-
-CPU verification (29checks for deployed recovery source):
-
-```bash
-python -m pytest experiments/ps_concentration/test_hero_v2.py experiments/ps_concentration/test_rng_vllm.py experiments/ps_concentration/test_streaming_rl.py experiments/ps_concentration/test_objective.py -q
-```
-
-No separate GPU smoke or baseline evaluation preceded the real run. Speed,peak memory and KL overhead must be measured from run artifacts; five minutes/update remains a target.
-
-The optional defer_native_logs setting buffers intermediate native game.json writes until finalization,while retaining every in-memory turn and existing incremental token logs. Interruption forces a flush before scoring. Tests compare every final byte and response count against the pinned native TurnLogger,including forced partial flushes and concurrent episodes. A source-only checkpoint migration requires accepted_resume_sources to explicitly list the reviewed previous source digest; every other saved identity field must match. These settings change logging and implementation provenance,not the game,prompt,reward,loss or optimizer schedule.
-
-Preserve node-local actor timing and device reports before an allocation ends:
-
-```bash
-python -m experiments.ps_concentration.hero_telemetry --run-dir RUN
-```
-
-This CPU command copies complete actor reports into RUN/actor-telemetry,checks their collection policy,episode identities and token totals against every committed batch,and saves a hashed manifest. Existing copies must match their original bytes. Shared KV-pool allocation is reported separately from per-game logical retained KV. Run the command on the training node while its reports remain available; saved copies remain usable after node cleanup. It launches no model and changes no training state.
-
-Prepare deferred validation with a captured evaluation implementation:
-
-```bash
-python -m experiments.ps_concentration.hero_validation_plan --run-dir RUN --output VALIDATION_DIR --policy-dir POLICIES --source-root SOURCE --source-sha256 SHA256
-```
-
-The plan launches no model. It fixes original full/PS controls and PS candidates every16updates through128,all on the reserved128validation boards,with four- and eight-GPU command layouts. Export paths may be prepared before exports exist; preserve and verify those files before execution. Run evaluations only after training and its workers finish. Selection uses the highest validation efficiency reward pairs/8 minus responses/96,with earlier updates winning ties; training error penalties remain separately reported. The original checkpoint remains eligible.
-
-The existing rng_select and rng_final_plan CLIs accept this hero plan. They validate the nested hero training identity and the current128-thinking/32-answer controller,without presenting the shared inference RunConfig as the training algorithm. Final report training-episode counts derive from the saved global batch128. Its efficiency curve uses the unshaped efficiency reward; hero_report additionally plots the reward including error penalties. Native RNG score is pairs found. Greedy controls using this final controller remain necessary even when earlier unrestricted-thinking baselines were strong.
-
-Verify each scheduled BF16 candidate while its matching FP32 snapshot is still available:
-
-```bash
-python -m experiments.ps_concentration.hero_exports --checkpoint RUN/checkpoints/latest.pt --policy NODE_POLICY_DIR --output RUN/export-catalog/policy-0016.json
-```
-
-This CPU command compares every effective BF16 parameter,including tied-weight handling,against the saved FP32 masters and records file hashes. It checks tokenizer vocabulary,native chat template,special tokens,architecture and unchanged RoPE/context settings. It supplies the original reference generation_config.json when that standalone export lacks it. The experiment.json marker must exist and both snapshot and candidate must have the same policy version. Receipts belong outside the export directory. This verifies an inference artifact; it runs no model,restores no optimizer and selects no checkpoint. Node-local weights still need preservation before releasing the allocation.
-
-After the complete training budget and worker shutdown,run the deferred performance workflow:
-
-```bash
-python -m experiments.ps_concentration.hero_finish --run-dir RUN --plan VALIDATION_DIR/plan.json --output FINISH_DIR --gpus 8
-```
-
-It requires the completed training state,an idle assigned GPU set,and exact-weight verification receipts for every candidate. It preserves all BF16 candidates on shared storage,checks copied file hashes,runs complete validation,selects a checkpoint,runs the prescribed final conditions,and renders tables,figures and20fixed-order greedy examples. Completed conditions are verified and skipped on resume. A four-GPU continuation uses the same command with --gpus4:the original plan files remain fixed while actual GPU counts are recorded in evaluation protocols and per-cohort accounting. The evaluation-only --gpus override preserves the board seeds,model,controller and attention settings.
-
-Evaluation uses buffered native logging and compressed full histories,as the hero actors do. The final workflow status explicitly leaves causal memory interventions and independent training replication pending. The workflow does not release the allocation or treat performance tables as a textual-memory conclusion.
-
-After performance evaluation has finished,collect and execute memory interventions:
-
-```bash
-python -m experiments.ps_concentration.hero_memory --run-dir RUN --finish-dir FINISH_DIR --output MEMORY_DIR --gpus 8
-```
-
-This requires the completed performance status and the full reserved intervention split. It selects at most128states in fixed seed order before current-turn thinking,then runs unedited,association-swap and equal-size sham branches with32MonteCarlo samples plus a greedy continuation. Independent GPU workers share individual state results and write separate summaries. Four/eight-GPU resumption preserves state identities,random seeds,controller and existing completed results. Every qualified state remains counted,including cases without a usable sham. The combined summary and intervention-table.csv report the all-state and unedited-selects-partner subsets,streaming-versus-cold behavior,native likelihood audits and remaining uncertainty. Effective-BF16 cold reconstruction is not the native vLLM rollout backend;parity failures and fewer than32qualified states prevent a textual-memory conclusion. This command neither releases the allocation nor completes training replication.
+[hero_pair_plan.py](hero_pair_plan.py) freezes the approved matrix. [hero_continue.py](hero_continue.py) verifies state-preserving forks. [hero_pair.py](hero_pair.py) performs the short sweep and matched training. [hero_pair_final.py](hero_pair_final.py) validates, selects, evaluates, and intervenes only after both branches complete. [hero_pair_report.py](hero_pair_report.py) derives results and figures from saved records. These stages do not automatically declare goal completion or release the allocation.
