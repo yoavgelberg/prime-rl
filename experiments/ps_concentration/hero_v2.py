@@ -3,9 +3,11 @@
 import argparse
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import gzip
+import fcntl
 import hashlib
 import json
 import math
@@ -54,6 +56,7 @@ class HeroConfig:
     invalid_penalty: float = .02
     head_block_tokens: int = 128
     checkpoint_interval: int = 8
+    checkpoint_io_lock: str | None = None
     export_interval: int = 16
     wandb_id: str = 'rng-4b-ps-grpo-s11-hero-v2-a1'
     revision: str = '768f209d9ea81521153ed38c47d515654e938aea'
@@ -108,6 +111,18 @@ def write(path, value):
 
 def read(path):
     return json.loads(Path(path).read_text())
+
+
+@contextmanager
+def checkpoint_write_lock(path):
+    if path is None:
+        yield
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
 
 
 def reusable_episode(path, spec, config):
@@ -333,7 +348,7 @@ def trainer_main(config, rank, port):
             rngs_by_rank=states,
             identity=identity(config), resolved_config=asdict(config))
 
-        def commit():
+        def commit_unlocked():
             directory = root / 'checkpoints'
             directory.mkdir(exist_ok=True)
             path = directory / 'latest.pt'
@@ -341,7 +356,7 @@ def trainer_main(config, rank, port):
             torch.save(saved, temporary)
             temporary.replace(path)
             metadata = dict(policy_version=update, bytes=path.stat().st_size,
-                identity=identity(config), utc=utc())
+                identity=identity(config), checkpoint_path=str(path.resolve()), utc=utc())
             write(path.with_suffix('.pt.json'), metadata)
             if update % config.export_interval == 0 or update == config.updates:
                 export = Path(config.node_dir).parent / 'candidate-policies' / f'policy-{update:04d}'
@@ -360,8 +375,13 @@ def trainer_main(config, rank, port):
                 from transformers import AutoTokenizer
                 AutoTokenizer.from_pretrained(config.model).save_pretrained(export)
                 write(export / 'experiment.json', dict(identity(config), policy_version=update,
-                    storage='BF16 effective weights; complete FP32 optimizer state in durable latest.pt'))
+                    storage=f'BF16 effective weights; FP32 optimizer state at {path.resolve()}; '
+                            'durability is recorded in checkpoint/archive receipts'))
             return metadata
+
+        def commit():
+            with checkpoint_write_lock(config.checkpoint_io_lock):
+                return commit_unlocked()
 
         return writer.submit(commit)
 
@@ -519,7 +539,8 @@ def coordinator(config, config_path):
         children=[dict(role=r,rank=n,pid=p.pid) for r,n,p in children], devices=devices,
         node_dir=str(node), policy_identity=identity(config)))
     monitor = wandb.init(entity='tech-ml', project='ps-memory', id=config.wandb_id,
-        resume='allow', name='Qwen3-4B PS-GRPO hero v2 (KL+entropy,independentvLLM)',
+        resume='allow', name=f'Qwen3-4B PS-GRPO W{config.window} seed{config.seed}'
+            + (' continuation' if config.schedule_updates else ' hero v2'),
         config=asdict(config), allow_val_change=True,
         tags=['hero-v2','fa4-ps','kl','independent-actors'])
     wandb.define_metric('train/update')
@@ -533,6 +554,8 @@ def coordinator(config, config_path):
 
     latest = root/'checkpoints/latest.pt.json'
     version = read(latest)['policy_version'] if latest.exists() else 0
+    fork = root / 'fork-receipt.json'
+    parent_version = read(fork)['parent_policy_version'] if fork.exists() else 0
     try:
         while not all((node/f'{r}-{n}/ready.json').exists() for r,n,_ in children):
             healthy()
@@ -610,6 +633,7 @@ def coordinator(config, config_path):
             metrics=aggregate(config,rows)
             seconds=time.perf_counter()-started
             metrics.update(update=update,training_episodes=update*config.batch_size,
+                new_training_episodes=(update-parent_version)*config.batch_size,
                 kl_per_generated_token=sum(t['kl_sum'] for t in trajectories)/tokens,
                 entropy_per_generated_token=sum(t['entropy_sum'] for t in trajectories)/tokens,
                 normalized_policy_loss=sum(t['policy_sum'] for t in trajectories)/(config.denominator*config.batch_size),

@@ -56,7 +56,7 @@ def test_both_forks_preserve_complete_training_state_and_are_idempotent(parent, 
         assert loaded['optimizer']['param_groups'][0]['lr'] == 4e-7
         assert loaded['identity'] == identity(branch)
         assert loaded['resolved_config']['updates'] == 192
-        assert (Path(branch.output) / 'checkpoints').is_symlink()
+        assert not (Path(branch.output) / 'checkpoints').is_symlink()
     assert fork_checkpoint(run, configs, expected_parameters=3) == receipts
 
 
