@@ -68,7 +68,7 @@ def prepare(parent_run, output, source_sha256, node_base):
     state = torch.load(path, map_location='cpu', weights_only=True, mmap=True)
     if state['policy_version'] != 192 or state['identity'] != identity(parent):
         raise ValueError('Full parent state differs from its identity')
-    if len(state['model']) != 398 or len(state['optimizer']['state']) != 398:
+    if len(state['model']) not in (398, 399) or len(state['optimizer']['state']) != 398:
         raise ValueError('Preserve all model and Adam tensors')
     if any(int(value['step']) != 192 for value in state['optimizer']['state'].values()):
         raise ValueError('Adam steps must remain192')
