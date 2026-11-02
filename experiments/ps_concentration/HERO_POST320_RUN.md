@@ -63,3 +63,11 @@ uv run python -m experiments.ps_concentration.hero_post320_final run --plan FINA
 ```
 
 The default run executes PS conditions. Full attention is an explicit later phase. The memory command preserves the reserved4Msplit, prethinking qualification,128-state maximum,32-state conclusion minimum and common cold rebuild for unedited/swap/sham branches. It counts every qualified state and leaves insufficient evidence visible. Both commands reject incomplete training before any GPU work and resume only fixed, verified policy archives and condition configurations. Four-GPU fallback changes physical execution while preserving the same boards, controller and checkpoint identities. Use available private HAIC storage for final outputs when shared scratch headroom is insufficient.
+
+Generate the integrated continuation report from the frozen final plan:
+
+```bash
+uv run python -m experiments.ps_concentration.hero_post320_report --final-plan FINAL_DIR/plan.json --output REPORT_DIR
+```
+
+Use `--allow-partial` for a dated progress snapshot while conditions remain incomplete. The strict report requires all448training updates, all22evaluation conditions and the completed memory analysis; zero qualifying intervention states remain a completed negative result. Tables separate512-board standard comparisons,128-board window diagnostics and256-board size generalization. The W1024sweep points use only the first128records of the standard tests. The paired448-minus320 interval uses10,000board resamples and does not imply independent training-seed replication. PNG/PDF figures, input hashes, twenty fixed-order continued-policy PS1024transcripts and intervention/cache controls derive from saved records. Reporting runs separately from the captured GPU evaluator and changes no training or evaluation source.
