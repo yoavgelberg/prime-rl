@@ -41,6 +41,10 @@ def test_partial_report_never_labels_sampled_training_as_a_final_test(post320_pl
     assert len(rows) == 1 and float(rows[0]['shaped_reward']) == .4
     assert int(rows[0]['new_training_episodes']) == 128 and int(rows[0]['lineage_episodes']) == 41088
     assert str(future) not in result['input_sha256']
+    assert read(output / 'training-state.json') == result['training_snapshot']['state']
+    assert read(output / 'resolved_config.json') == result['training_snapshot']['config']
+    committed(config, update=322)
+    assert read(output / 'training-state.json')['policy_version'] == 321
     assert not list(output.glob('final-return-vs-window.*'))
     assert all((output / f'return-vs-training-episodes.{ext}').stat().st_size > 1000 for ext in ('png', 'pdf'))
     with pytest.raises(ValueError, match='448 committed'):

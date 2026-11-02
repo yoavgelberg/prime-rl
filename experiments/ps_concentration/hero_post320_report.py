@@ -1,6 +1,9 @@
 """Report the fixed448 continuation from committed batches and fresh held-out boards."""
 
 import argparse
+from dataclasses import asdict
+import hashlib
+import json
 from pathlib import Path
 
 from .hero_exports import file_hash
@@ -15,20 +18,27 @@ from .rng_report import analyze_condition, paired_bootstrap
 def training_rows(config):
     root = Path(config.output)
     state_path = root / 'state.json'
-    state = read(state_path)
+    sources = {}
+
+    def captured(path):
+        data = path.read_bytes()
+        sources[str(path)] = hashlib.sha256(data).hexdigest()
+        return json.loads(data)
+
+    snapshot = dict(state=captured(state_path), config=captured(root / 'resolved_config.json'))
+    state = snapshot['state']
     version = state['policy_version']
-    if state['identity'] != identity(config) or not 320 <= version <= 448:
+    if (snapshot['config'] != json.loads(json.dumps(asdict(config))) or state['identity'] != identity(config)
+            or not 320 <= version <= 448):
         raise ValueError('Report the declared continuation identity and committed320–448 updates')
-    rows, sources = [], {str(state_path): file_hash(state_path),
-        str(root / 'resolved_config.json'): file_hash(root / 'resolved_config.json')}
+    rows = []
     for update in range(321, version + 1):
         path = root / f'update-metrics/update-{update:04d}.json'
-        metrics = read(path)['metrics']
+        metrics = captured(path)['metrics']
         if (metrics['update'] != update or metrics['episodes'] != 128
                 or metrics['training_episodes'] != update * 128
                 or metrics.get('exact_categorical_kl_active') is not True):
             raise ValueError('Require every complete128-trajectory committed batch with exact KL')
-        sources[str(path)] = file_hash(path)
         rows.append(dict(update=update, collection_policy_version=update - 1,
             new_training_episodes=(update - 320) * 128, lineage_episodes=update * 128,
             shaped_reward=metrics['mean_return'], efficiency_reward=metrics['mean_native_return'],
@@ -36,7 +46,7 @@ def training_rows(config):
             seconds=metrics['seconds'], tokens_per_game_second=metrics['mean_per_game_tokens_per_second'],
             generated_tokens=metrics['generated_tokens'], gradient_norm=metrics['gradient_norm'],
             kl_per_generated_token=metrics['kl_per_generated_token']))
-    return rows, sources, version
+    return rows, sources, snapshot
 
 
 def window_rows(conditions):
@@ -157,7 +167,8 @@ def report(final_path, output, *, allow_partial=False):
             or final['baseline_update'] != 320 or file_hash(final['plan']) != final['plan_sha256']):
         raise ValueError('Use the frozen post320 training and fixed448 test plans')
     configs = configurations(read(final['plan']))
-    curve, sources, committed = training_rows(configs['continued'])
+    curve, sources, snapshot = training_rows(configs['continued'])
+    committed = snapshot['state']['policy_version']
     available, missing = [], []
     for entry in final['conditions']:
         if not Path(entry['summary']).exists():
@@ -178,6 +189,8 @@ def report(final_path, output, *, allow_partial=False):
     if pending and not allow_partial:
         raise ValueError('Final results require448 committed updates, every evaluation and the memory analysis')
     output.mkdir(parents=True, exist_ok=True)
+    write(output / 'training-state.json', snapshot['state'])
+    write(output / 'resolved_config.json', snapshot['config'])
     targets = [row for row in available if row['split'] == 'post320_test'
         and row['attention'] == 'ps' and row['window'] == 1024 and row['expected_boards'] == 512]
     if targets:
@@ -219,7 +232,7 @@ def report(final_path, output, *, allow_partial=False):
         evaluation_source=dict(root=final['evaluation_source_root'], sha256=final['evaluation_source_sha256']),
         missing_conditions=missing, missing_memory=memory is None, paired_comparison=comparison(available, final),
         conditions=[{key:value for key, value in row.items() if key != 'rows'} for row in available],
-        intervention=memory, input_sha256=sources,
+        intervention=memory, input_sha256=sources, training_snapshot=snapshot,
         independent_training_lineages=1, training_seed_std=None,
         analysis_implementation={name:file_hash(Path(__file__).with_name(name)) for name in
             ('hero_post320_report.py', 'rng_report.py', 'rng_memory_metrics.py', 'rng_trace.py',
