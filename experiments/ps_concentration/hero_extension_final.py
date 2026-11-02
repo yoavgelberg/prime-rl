@@ -4,6 +4,8 @@ import argparse
 from dataclasses import replace
 import fcntl
 from pathlib import Path
+import subprocess
+import sys
 
 from .hero_exports import file_hash
 from .hero_finish import execute_conditions, ready, require_idle_devices
@@ -132,6 +134,42 @@ def execute(final_path, *, gpus):
             condition_result(entry)
 
 
+def memory(final_path, *, gpus):
+    from .hero_memory import execute as intervene
+
+    final_path = Path(final_path)
+    final = read(final_path)
+    if file_hash(final['plan']) != final['plan_sha256']:
+        raise ValueError('Preserve the frozen extension and intervention collection conditions')
+    configs = configurations(read(final['plan']))
+    for label, config in configs.items():
+        if label != 'parent':
+            ready(config.output, dict(training_barrier=320, training_identity=identity(config)))
+    require_idle_devices(gpus)
+    for entry in final['conditions']:
+        if entry['split'] != 'intervention':
+            continue
+        condition_result(entry)
+        metadata = verify_policy(entry['archive'])
+        if (metadata['catalog']['policy_version'] != 320
+                or metadata['catalog']['identity'] != entry['policy_training_identity']):
+            raise ValueError('Intervene on the same fixed320 policy used for state collection')
+        hydrate(entry['archive'], entry['checkpoint'])
+        config = configs[entry['arm']]
+        output = final_path.parent/'memory'/f'{entry["arm"]}-w{entry["window"]}'
+        collection = output/'collection'
+        episodes = Path(entry['summary']).parent/'episodes.jsonl'
+        save_fixed(output/'collection-inputs.json', dict(episodes=str(episodes),
+            episodes_sha256=file_hash(episodes), checkpoint=entry['checkpoint'],
+            window=entry['window'], maximum=128, boundary='before_thinking'))
+        if not (collection/'collection-summary.json').exists():
+            subprocess.run([sys.executable, '-m', 'experiments.ps_concentration.rng_intervention_states',
+                '--episodes', str(episodes), '--tokenizer', config.model, '--output', str(collection),
+                '--maximum', '128', '--boundary', 'before_thinking'], check=True)
+        intervene(entry['checkpoint'], collection/'states.jsonl.gz', config.model, config.source,
+            output, gpus=gpus)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -141,15 +179,22 @@ def main():
     preparation.add_argument('--source-root', required=True)
     preparation.add_argument('--source-sha256', required=True)
     preparation.add_argument('--gpus', type=int, choices=(4, 8), required=True)
-    run = commands.add_parser('run')
-    run.add_argument('--plan', required=True)
-    run.add_argument('--gpus', type=int, choices=(4, 8), required=True)
+    for name in ('run', 'memory', 'finish'):
+        run = commands.add_parser(name)
+        run.add_argument('--plan', required=True)
+        run.add_argument('--gpus', type=int, choices=(4, 8), required=True)
     args = parser.parse_args()
     if args.command == 'prepare':
         prepare(args.plan, args.output, gpus=args.gpus, source_root=args.source_root,
             source_sha256=args.source_sha256)
+    elif args.command == 'memory':
+        memory(args.plan, gpus=args.gpus)
     else:
         execute(args.plan, gpus=args.gpus)
+        if args.command == 'finish':
+            from .hero_extension_report import report
+            memory(args.plan, gpus=args.gpus)
+            report(args.plan, Path(args.plan).parent/'results')
 
 
 if __name__ == '__main__':
