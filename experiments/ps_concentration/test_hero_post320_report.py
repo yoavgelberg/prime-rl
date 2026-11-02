@@ -166,6 +166,7 @@ def test_complete_report_keeps_sizes_windows_memory_and_board_uncertainty_separa
         episodes.parent.mkdir(parents=True)
         records = [dict(board_seed=entry['first_board_seed'] + index, greedy=True,
             episode_id=f'{entry["condition"]}-{index}', score=board['total_pairs'],
+            policy_version=entry['policy_version'],
             response_count=attempts, done=True, censored=False, generated_tokens=100,
             raw_transcript_tokens=200, format_errors=0, invalid_actions=0, seconds=2.,
             training_return=1 - attempts / board['max_responses'],
