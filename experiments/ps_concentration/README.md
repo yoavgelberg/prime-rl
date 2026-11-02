@@ -2,6 +2,8 @@
 
 **Current experiment:** native RNG-Bench Matching Pairs 4×4 with Qwen3-4B-Thinking, PS-only GRPO, independent native vLLM actors, and a joint FA4 prefix-sliding learner pass for policy loss, KL, and entropy. Use [the hero v2 protocol](HERO_V2_RUN.md). [OVERLAP_RUN.md](OVERLAP_RUN.md) describes the stopped earlier run with backward during generation. The POPGym/Instruct commands and results below describe the original implementation.
 
+The current W1024/W512 continuation forks the common full update192 state and trains to fixed update320, switching both arms to exact vocabulary KL from update215. See [the extension protocol and fresh-evaluation CLI](HERO_EXTENSION_RUN.md) for the preserved optimizer/RNG state, warmup, fresh board splits, intervention controls, and deferred reporting.
+
 This experiment tests outcome-based adaptation to a fixed system prefix and bounded rolling attention. The neutral prompt permits scratch work but supplies no note format, examples, memory tools, or note-writing reward. Native observations, rewards, action-0 format fallback and transient mismatch observations are preserved.
 
 Run from the repository root with `PYTHONPATH=src:.` and the captured environment active. The commands are also runnable through `uv run --active --no-sync` in that environment.
