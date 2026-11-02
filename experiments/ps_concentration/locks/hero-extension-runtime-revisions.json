@@ -1,0 +1,58 @@
+{
+  "experiment": "Exploratory native RNG-Bench W1024/W512 continuation",
+  "observed_at_utc": "2026-11-02T07:31:07Z",
+  "python": "3.12.12 (main, Oct 14 2025, 21:25:31) [Clang 20.1.4 ]",
+  "model": "Qwen/Qwen3-4B-Thinking-2507",
+  "model_revision": "768f209d9ea81521153ed38c47d515654e938aea",
+  "tokenizer_revision": "768f209d9ea81521153ed38c47d515654e938aea",
+  "model_file_sha256": {
+    "config.json": "5beea1a4a34c62782bfb2f911c606741a3bab8f92d80a118fa053c28af12e8ba",
+    "generation_config.json": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2",
+    "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_config.json": "60adcfc35f5f251e19a196ec977b4ca0fcfb534852911b3196d68d5e3b146aa0"
+  },
+  "native_game_git_commit": "e3d195e857727dfa3d4a96561be202098d67da83",
+  "training_code": {
+    "git_commit": "fb64b48ac136136c5fdeaa6400fee50fe13ee989",
+    "archive_sha256": "b4cc0a2f071acff4bca17f6589286843ea52710743f3cb7b44cb245dd15d8a3c"
+  },
+  "evaluation_code": {
+    "git_commit": "1b8f3b6b059d0099ef7a3e6adbe6477960fdeda0",
+    "archive_sha256": "62044e47e81c86dcba2f9c48805fc54f7df376d4e407688c0984e49d6e757b37"
+  },
+  "package_lock": {
+    "path": "hero-extension-runtime-packages.lock.txt",
+    "packages": 213,
+    "sha256": "1d516ea5554f43ed06f266e5170969f35efdba01dda99229003af0ff02e11c5e",
+    "selection": "First metadata distribution per canonical name in deployed sys.path order;28 shadowed entries retained in raw manifest"
+  },
+  "module_provider_origin_sha256": {
+    "torch": "3caf7f40140ede2465bde40b9003af10cbbc8f7bcf436fa1de026471daa1b288",
+    "vllm": "7d2fcdb2be605a1762738ace551515832d4fbdd485b7e888c6387fc1bd7e2876",
+    "transformers": "4ef5187b5f66c564aa575ddab9ce94342630d40fe874d0464d790c6f6b748647",
+    "flash_attn": "f1833af940ac1124e09dc05dd922308871411035e75b90bf4dbe3a831dc03b50",
+    "triton": "4ec1df745c6bfd03257370a2aab1534e7a31eaa62110cad2ff6c3b56a67cfc50",
+    "prime_rl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "wandb": "daaea8c4b566c243792ead50c29264571f7d0c9c580fd47cbc69ec1b92a3b753"
+  },
+  "vllm_python_overlay": {
+    "archive": "vllm-python-overlay.tar.gz",
+    "archive_sha256": "e539a54c4b2d21116e4982233d7f99de3a72020aa3b962702497f1ff4e970304",
+    "manifest_sha256": "516ee7f18d949e6b9fdeab10d76d0f9847a97e64a35967100507708e3c589b9e",
+    "files": 1693,
+    "source_bytes": 17798005,
+    "scope": "Exact Python/text overlay used by the vLLM module provider, distinct from installed distribution metadata. Compiled binaries are excluded; their distribution versions remain in the complete package lock. No running source files were changed or imported."
+  },
+  "configuration_phase": {
+    "gpus_per_arm": 4,
+    "windows": [
+      1024,
+      512
+    ],
+    "target_update": 320,
+    "global_trajectories": 128,
+    "group_size": 8
+  },
+  "raw_environment_manifest_sha256": "2ed5944fe323f37341e068c4a2312fb7461771493db7c6cd8cb497f455397d32",
+  "scope": "Observed package metadata in sys.path precedence and actual four-GPU resolved configurations. Custom source providers and metadata hashes are recorded; the version list alone does not reconstruct custom wheels or source overrides. No package installation, model/GPU import, checkpoint read, GPU evaluation, or running configuration edit. Later layout phases require their own config snapshot."
+}
