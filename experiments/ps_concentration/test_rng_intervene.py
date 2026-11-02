@@ -298,7 +298,7 @@ def test_streaming_parity_uses_recorded_temperature(monkeypatch, temperature):
     record = dict(tokens=[0, 0, 2, 1], roles=['prefix', 'environment_template', 'assistant', 'assistant'],
         turns=[dict(start=2, end=4)], prefix_length=1, temperature=temperature,
         old_tempered_logps=[None, None, logps[2].item(), logps[1].item()])
-    state = dict(response_index=0, window=16, decision_position=2)
+    state = dict(response_index=0, window=16, prefix_length=1, decision_position=2)
     base = SimpleNamespace(device='cpu', lm_head=SimpleNamespace(weight=None))
     result = module.audit_streaming(base, record, state)
     assert result['sampled_positions'] == [2, 3]
