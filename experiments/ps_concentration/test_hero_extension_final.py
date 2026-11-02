@@ -58,6 +58,8 @@ def test_extension_final_freezes_common_parent_fixed320_and_primary_pair(tmp_pat
     entries = final['conditions']
     assert [r['condition'] for r in entries[:2]] == final['primary']
     for entry in entries:
+        inference = json.loads(Path(entry['argv'][entry['argv'].index('--config')+1]).read_text())
+        assert inference['evaluation_concurrency'] == (16 if entry['attention']=='full' else 64)
         expected = 0 if entry['arm']=='base' else 192 if entry['arm']=='parent' else 320
         assert entry['policy_version'] == expected
         assert entry['count'] == (128 if entry['condition'].endswith('first128') else

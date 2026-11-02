@@ -47,7 +47,7 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
             name += '-first128'
         folder = output / name
         inference = replace(inference_config(config, output=folder, gpus=gpus), window=window,
-            evaluation_concurrency=16 if attention == 'full' else 128 // gpus)
+            evaluation_concurrency=16 if attention == 'full' else 64)
         config_path = folder / 'config.json'
         save_fixed(config_path, inference.model_dump())
         argv = ['python', '-m', 'experiments.ps_concentration.rng_overlap', 'evaluate',
@@ -88,6 +88,9 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
     result = dict(format='hero-extension-final-v1', plan=str(plan_path), plan_sha256=fingerprint,
         evaluation_source_root=str(source_root), evaluation_source_sha256=source_sha256,
         gpus=gpus, conditions=entries, fixed_final_update=320, baseline_update=192,
+        evaluation_capacity=dict(ps_games_per_gpu=64, full_games_per_gpu=16,
+            evidence='Existing native actor runs use64games perGPU; PS4096 KV bound is42.75GiB perGPU',
+            full_kv_token_bound=FULL_EVALUATION_TOKEN_BOUND),
         primary=['w512-ps-w512-extension_test', 'w1024-ps-w512-extension_test'],
         secondary_baseline='parent-ps-w512-extension_test',
         primary_metric='Unshaped efficiency reward: pairs/8 - responses/96',
