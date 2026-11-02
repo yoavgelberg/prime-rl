@@ -5,6 +5,7 @@ import copy
 import gzip
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -39,12 +40,21 @@ def coordinate(position):
     return ord(position[0]) - ord('a'), ord(position[1]) - ord('A')
 
 
+def sampling_temperature(record):
+    value = record.get('temperature', .6)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        raise ValueError('Intervention temperature must be a positive finite number')
+    return float(value)
+
+
 def validate_source(record, state, metadata, checkpoint):
     if (record['policy_version'] != metadata['policy_version']
             or record['policy_identity'] != str(Path(checkpoint).resolve()) or not record['greedy']
             or record['attention'] != 'ps' or record['window'] != state['window']
             or record['window'] < 1 or record['board_seed'] != state['board_seed']):
         raise ValueError('Intervention source is not a greedy PS rollout of this exact checkpoint and board')
+    if sampling_temperature(record) != sampling_temperature(metadata):
+        raise ValueError('Intervention source changed the checkpoint sampling temperature')
     keys = ('thinking_token_limit', 'action_token_limit', 'thinking_budget_transition')
     protocol = {key: record.get(key) for key in keys}
     expected = {key: metadata.get(key) for key in keys}
@@ -110,7 +120,8 @@ def score_choice(env, action, state, invalid_type):
 
 @torch.inference_mode()
 def continue_branch(base, tokenizer, eos_ids, state, tokens, final_prefix, *, samples, rng_seed,
-                    parse_coord, environment, invalid_type, transcript_cap=262144):
+                    parse_coord, environment, invalid_type, transcript_cap=262144, temperature=.6):
+    temperature = sampling_temperature(dict(temperature=temperature))
     stream = NativeCold(base, state['prefix_length'], state['window'], copies=samples + 1)
     logits = stream.prefill(tokens, state['retained_positions'])
     generator = torch.Generator(device=base.device).manual_seed(rng_seed)
@@ -120,7 +131,7 @@ def continue_branch(base, tokenizer, eos_ids, state, tokens, final_prefix, *, sa
         raise ValueError('The native controller requires a single newline token')
     for _ in range(transcript_cap - state['decision_position']):
         proposals = torch.cat([logits[:1].argmax(-1), torch.multinomial(
-            (logits[1:].float() / .6).softmax(-1), 1, generator=generator)[:, 0]]) if samples else logits.argmax(-1)
+            (logits[1:].float() / temperature).softmax(-1), 1, generator=generator)[:, 0]]) if samples else logits.argmax(-1)
         ids = proposals.tolist()
         for index, token in enumerate(ids):
             if stops[index] is not None:
@@ -143,7 +154,7 @@ def continue_branch(base, tokenizer, eos_ids, state, tokens, final_prefix, *, sa
         rows.append(dict(score_choice(environment, action, state, invalid_type),
             tokens=response, final_text=text, stop_condition=stops[index] or 'transcript_capacity', greedy=index == 0))
     sampled = rows[1:]
-    return dict(greedy=rows[0], sampled=sampled, sampling_temperature=.6, top_p=1., top_k=-1,
+    return dict(greedy=rows[0], sampled=sampled, sampling_temperature=temperature, top_p=1., top_k=-1,
         samples=samples, probability_correct_partner=sum(row['correct'] for row in sampled) / samples if samples else None,
         probability_following_false=sum(row['follows_false'] for row in sampled) / samples if samples else None,
         probability_definition='Monte Carlo native next-flip probability from the intervention cursor; greedy continuation excluded',
@@ -154,6 +165,7 @@ def continue_branch(base, tokenizer, eos_ids, state, tokens, final_prefix, *, sa
 @torch.inference_mode()
 def continue_turn(base, tokenizer, eos_ids, state, tokens, record, *, samples, rng_seed,
                   parse_coord, environment, invalid_type, transcript_cap=262144):
+    temperature = sampling_temperature(record)
     start = state['decision_position']
     if start != record['turns'][state['response_index']]['start']:
         raise ValueError('The primary intervention must precede all current-turn thinking')
@@ -177,7 +189,7 @@ def continue_turn(base, tokenizer, eos_ids, state, tokens, record, *, samples, r
     generator = torch.Generator(device=base.device).manual_seed(rng_seed)
     for _ in range(transcript_cap - start):
         proposals = torch.cat([logits[:1].argmax(-1), torch.multinomial(
-            (logits[1:].float() / .6).softmax(-1), 1, generator=generator)[:, 0]]) if samples else logits.argmax(-1)
+            (logits[1:].float() / temperature).softmax(-1), 1, generator=generator)[:, 0]]) if samples else logits.argmax(-1)
         actual = []
         for chat, token in zip(chats, proposals.tolist(), strict=True):
             actual.append(chat.advance(token, None, None).token if chat.request is not None else next(iter(eos_ids)))
@@ -196,7 +208,7 @@ def continue_turn(base, tokenizer, eos_ids, state, tokens, record, *, samples, r
             thinking_budget_forced=chat.thinking_budget_forced,
             stop_condition=turn['stop_condition'] if turn is not None else 'transcript_capacity', greedy=index == 0))
     sampled = rows[1:]
-    return dict(greedy=rows[0], sampled=sampled, sampling_temperature=.6, top_p=1., top_k=-1,
+    return dict(greedy=rows[0], sampled=sampled, sampling_temperature=temperature, top_p=1., top_k=-1,
         samples=samples, probability_correct_partner=sum(row['correct'] for row in sampled) / samples if samples else None,
         probability_following_false=sum(row['follows_false'] for row in sampled) / samples if samples else None,
         probability_definition='Monte Carlo next-flip probability including newly generated thinking with the native controller; greedy excluded',
@@ -219,7 +231,7 @@ def audit_streaming(base, record, state):
     if not sampled or any(record['old_tempered_logps'][position] is None for position in sampled):
         raise ValueError('The intervention source turn has missing sampled token likelihoods')
     selected = torch.tensor(sampled, device=base.device)
-    logits = teacher.linear(hidden[selected - 1], base.lm_head.weight).float() / .6
+    logits = teacher.linear(hidden[selected - 1], base.lm_head.weight).float() / sampling_temperature(record)
     actual = logits.log_softmax(-1).gather(1, ids[selected, None])[:, 0].cpu().tolist()
     expected = [record['old_tempered_logps'][position] for position in sampled]
     errors = [abs(a - b) for a, b in zip(actual, expected, strict=True)]
@@ -247,6 +259,7 @@ def main():
         parser.error('Use at least one stochastic sample in addition to the greedy branch')
     checkpoint = Path(args.checkpoint)
     metadata = json.loads((checkpoint / 'experiment.json').read_text())
+    temperature = sampling_temperature(metadata)
     if metadata['policy_version'] <= 0 or not isinstance(metadata['window'], int) or metadata['window'] < 1:
         raise ValueError('Use a selected trained PS checkpoint with a positive training window')
     if Path(args.reference).name != '768f209d9ea81521153ed38c47d515654e938aea':
@@ -269,8 +282,8 @@ def main():
         if path.exists():
             row = json.loads(path.read_text())
             if (row['checkpoint'] != str(checkpoint.resolve()) or row['samples'] != args.samples
-                    or row.get('state_sha256') != identity):
-                raise ValueError('An existing intervention belongs to a different checkpoint or sample count')
+                    or row.get('state_sha256') != identity or row.get('sampling_temperature', .6) != temperature):
+                raise ValueError('An existing intervention has a different checkpoint, state, sample count or temperature')
             results.append(row)
         else:
             pending.append(state)
@@ -283,6 +296,7 @@ def main():
     for state in pending:
         started = time.perf_counter()
         row = dict(state, checkpoint=str(checkpoint.resolve()), samples=args.samples,
+                   sampling_temperature=temperature,
                    checkpoint_training_window=metadata['window'], evaluation_window=state['window'],
                    state_sha256=hashlib.sha256(json.dumps(state, sort_keys=True).encode()).hexdigest())
         if 'edits' in state:
@@ -321,7 +335,7 @@ def main():
                 final_prefix = prefix.rsplit('</think>', 1)[-1]
                 row[branch] = continue_branch(base, tokenizer, eos, state, tokens, final_prefix,
                     samples=args.samples, rng_seed=seed, parse_coord=parse_coord,
-                    environment=environment, invalid_type=invalid_type)
+                    environment=environment, invalid_type=invalid_type, temperature=sampling_temperature(record))
         row['seconds'] = time.perf_counter() - started
         write_json(output / (state['state_id'] + '.json'), row)
         results.append(row)

@@ -37,17 +37,19 @@ def test_parallel_workers_can_store_disjoint_summaries_beside_shared_state_resul
     assert not (results / 'summary.json').exists()
 
 
-def test_intervention_cannot_mix_checkpoints_boards_windows_or_thinking_controllers(tmp_path):
+@pytest.mark.parametrize('temperature', [.6, .8])
+def test_intervention_cannot_mix_checkpoints_boards_windows_or_thinking_controllers(tmp_path, temperature):
     protocol = dict(thinking_token_limit=128, action_token_limit=None,
                     thinking_budget_transition='\n</think>\n\n')
     record = dict(policy_version=32, policy_identity=str(tmp_path.resolve()), greedy=True,
-                  attention='ps', window=1024, board_seed=4000000, **protocol)
+                  attention='ps', window=1024, board_seed=4000000, temperature=temperature, **protocol)
     state = dict(window=1024, board_seed=4000000, continuation_protocol=protocol)
-    metadata = dict(policy_version=32, window=1024, **protocol)
+    metadata = dict(policy_version=32, window=1024, temperature=temperature, **protocol)
     module.validate_source(record, state, metadata, tmp_path)
     for key, value in [('policy_version',16), ('policy_identity','another'), ('greedy',False),
                        ('attention','full'), ('window',512), ('board_seed',4000001),
-                       ('thinking_token_limit',None), ('thinking_budget_transition',None)]:
+                       ('thinking_token_limit',None), ('thinking_budget_transition',None),
+                       ('temperature', .8 if temperature == .6 else .6)]:
         wrong = dict(record, **{key:value})
         with pytest.raises(ValueError):
             module.validate_source(wrong, state, metadata, tmp_path)
@@ -172,7 +174,8 @@ def test_uneditable_qualified_states_stay_in_reported_denominator():
     assert not summary['causal_textual_memory_established']
 
 
-def test_branch_uses_native_stop_rule_independent_clones_and_separate_greedy_count(monkeypatch):
+@pytest.mark.parametrize('temperature', [.6, .8])
+def test_branch_uses_native_stop_rule_independent_clones_and_separate_greedy_count(monkeypatch, temperature):
     class Stream:
         cache_bytes = 1234
         def __init__(self, base, prefix, window, copies):
@@ -205,7 +208,8 @@ def test_branch_uses_native_stop_rule_independent_clones_and_separate_greedy_cou
                  decision_position=100, false_partner='bB')
     row = module.continue_branch(SimpleNamespace(device='cpu'), CharacterTokenizer(), {127},
         state, [1, 2, 3], 'Action: ', samples=4, rng_seed=11, parse_coord=parse,
-        environment=env, invalid_type=ValueError, transcript_cap=103)
+        environment=env, invalid_type=ValueError, transcript_cap=103, temperature=temperature)
+    assert row['sampling_temperature'] == temperature
     assert row['greedy']['action'] == 'aA' and len(row['sampled']) == 4
     assert row['probability_correct_partner'] == 1.
     assert row['resource_terminations'] == 0
@@ -214,7 +218,8 @@ def test_branch_uses_native_stop_rule_independent_clones_and_separate_greedy_cou
     assert not env.board['matched'] and env.last_result is None
 
 
-def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(monkeypatch):
+@pytest.mark.parametrize('temperature', [.6, .8])
+def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(monkeypatch, temperature):
     class Tokenizer:
         eos_token_id = 127
         def encode(self, text, **kwargs):
@@ -257,7 +262,7 @@ def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(mo
     monkeypatch.setattr(module, 'NativeCold', Stream)
     protocol = dict(thinking_token_limit=2, action_token_limit=None, thinking_budget_transition=transition)
     record = dict(tokens=[1, 2, 3] + [0] * 97, roles=['prefix'] * 3 + ['environment_template'] * 97,
-                  turns=[dict(start=100)], **protocol)
+                  turns=[dict(start=100)], temperature=temperature, **protocol)
     state = dict(prefix_length=3, window=16, retained_positions=[0, 1, 2], decision_position=100,
                  response_index=0, false_partner='bB', continuation_protocol=protocol)
     env = Env()
@@ -265,6 +270,7 @@ def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(mo
         samples=4, rng_seed=11, parse_coord=lambda text, rows, cols: (0, 0) if text == 'Action: aA' else None,
         environment=env, invalid_type=ValueError, transcript_cap=140)
     assert row['greedy']['correct'] and row['greedy']['thinking_tokens'] == 0
+    assert row['sampling_temperature'] == temperature
     assert all(r['correct'] and r['thinking_tokens'] == 2 for r in row['sampled'])
     assert all(r['thinking_budget_forced'] for r in row['sampled'])
     assert row['sampled'][0]['tokens'] == [ord('x')] * 2 + tokenizer.encode(transition) + action
@@ -273,3 +279,33 @@ def test_prethinking_continuation_reuses_native_budget_and_resamples_thoughts(mo
     assert [tokens[1] for tokens in forwarded[:6]] == [ord('x')] * 2 + tokenizer.encode(transition)
     assert row['probability_correct_partner'] == 1. and row['resource_terminations'] == 0
     assert not env.board['matched'] and env.last_result is None
+
+
+@pytest.mark.parametrize('temperature', [.6, .8])
+def test_streaming_parity_uses_recorded_temperature(monkeypatch, temperature):
+    values = torch.tensor([1., 0., -1.])
+    logps = (values / temperature).log_softmax(-1)
+
+    class Teacher:
+        def __init__(self, *args, **kwargs):
+            pass
+        def segment(self, ids, *args):
+            return torch.zeros(len(ids), 1)
+        def linear(self, hidden, weight):
+            return values.expand(len(hidden), -1)
+
+    monkeypatch.setattr(module, 'NativeTeacher', Teacher)
+    record = dict(tokens=[0, 0, 2, 1], roles=['prefix', 'environment_template', 'assistant', 'assistant'],
+        turns=[dict(start=2, end=4)], prefix_length=1, temperature=temperature,
+        old_tempered_logps=[None, None, logps[2].item(), logps[1].item()])
+    state = dict(response_index=0, window=16, decision_position=2)
+    base = SimpleNamespace(device='cpu', lm_head=SimpleNamespace(weight=None))
+    result = module.audit_streaming(base, record, state)
+    assert result['sampled_positions'] == [2, 3]
+    assert result['absolute_error'] < 1e-6
+
+
+@pytest.mark.parametrize('value', [0., -1., float('nan'), float('inf'), True])
+def test_intervention_rejects_invalid_temperature(value):
+    with pytest.raises(ValueError, match='positive finite'):
+        module.sampling_temperature(dict(temperature=value))
