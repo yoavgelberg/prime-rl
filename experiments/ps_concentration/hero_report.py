@@ -24,6 +24,10 @@ def collect(run):
     config=captured(run/'resolved_config.json')
     batch=config['boards']*config['group_size']
     committed=state['policy_version']
+    fork=run/'fork-receipt.json'
+    parent=captured(fork)['parent_policy_version'] if fork.exists() else 0
+    if type(parent) is not int or not 0<=parent<committed:
+        raise ValueError('Progress requires completed updates after the recorded parent')
     excluded=set()
     recovery=run.parent/'recovery-receipt-a1.json'
     if recovery.exists():
@@ -35,10 +39,13 @@ def collect(run):
         point=captured(path);m=point['metrics'];update=m['update']
         if update>committed:
             continue
+        if update<=parent:
+            raise ValueError('Continuation metrics must follow the recorded parent update')
         if m['episodes']!=batch or m['training_episodes']!=update*batch:
             raise ValueError('Progress figures require complete batches at the configured global size')
         rows.append(dict(update=update,collection_policy_version=update-1,
-            training_episodes=m['training_episodes'],mean_shaped_return=m['mean_return'],
+            training_episodes=m['training_episodes'],new_training_episodes=(update-parent)*batch,
+            continuation_parent_update=parent,mean_shaped_return=m['mean_return'],
             mean_unshaped_efficiency_return=m['mean_native_return'],mean_pairs=m['mean_pairs'],
             mean_responses=m['mean_attempts'],completed_games=m['completed_only_denominator'],
             format_errors=m['format_errors'],native_invalid_actions=m['native_invalid_actions'],
@@ -50,7 +57,7 @@ def collect(run):
             kl_per_generated_token=m['kl_per_generated_token'],entropy_per_generated_token=m['entropy_per_generated_token'],
             gradient_norm=m['gradient_norm'],learning_rate=m['learning_rate'],
             recovery_or_source_continuation_cycle=update in excluded))
-    if not rows or {r['update'] for r in rows}!=set(range(1,committed+1)):
+    if not rows or {r['update'] for r in rows}!=set(range(parent+1,committed+1)):
         raise ValueError('Every committed update must have a complete saved metric record')
     return rows,config,sources,state
 
@@ -65,7 +72,8 @@ def report(run,output):
     output.mkdir(parents=True,exist_ok=True)
     with (output/'training-progress.csv').open('w',newline='') as handle:
         writer=csv.DictWriter(handle,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
-    x=[r['training_episodes'] for r in rows]
+    x=[r['new_training_episodes'] for r in rows]
+    parent=rows[0]['continuation_parent_update']
     fig,axes=plt.subplots(1,3,figsize=(13,3.8),constrained_layout=True)
     axes[0].plot(x,[r['mean_shaped_return'] for r in rows],'.-',label='Training reward')
     axes[0].plot(x,[r['mean_unshaped_efficiency_return'] for r in rows],'.-',label='Before error penalties')
@@ -75,9 +83,10 @@ def report(run,output):
     axes[2].plot(x,[r['mean_responses'] for r in rows],'.-');axes[2].set_ylim(0,96)
     axes[2].set_ylabel('Mean attempted responses')
     for ax in axes:
-        ax.set_xlabel('Training episodes collected');ax.grid(alpha=.25)
+        ax.set_xlabel(f'Additional episodes after update {parent}' if parent else 'Training episodes collected');ax.grid(alpha=.25)
     fig.suptitle(f'Matching Pairs 4×4 · PS W={config["window"]} · seed {config["seed"]} · sampled training')
-    fig.savefig(output/'return-pairs-responses.png',dpi=180);plt.close(fig)
+    fig.savefig(output/'return-pairs-responses.png',dpi=180)
+    fig.savefig(output/'return-pairs-responses.pdf');plt.close(fig)
     fig,axes=plt.subplots(1,3,figsize=(13,3.8),constrained_layout=True)
     for field,ax,label,scale in [('seconds',axes[0],'Seconds / update',1),
         ('sampled_tokens_per_second_per_game',axes[1],'Sampled tokens/s/game',1),
@@ -88,11 +97,12 @@ def report(run,output):
         if other:ax.scatter([r['update'] for r in other],[r[field]*scale for r in other],marker='x',color='gray',label='Recovery / continuation')
         ax.set_xlabel('Update');ax.set_ylabel(label);ax.grid(alpha=.25)
     axes[0].legend(fontsize=8)
-    fig.savefig(output/'systems.png',dpi=180);plt.close(fig)
+    fig.savefig(output/'systems.png',dpi=180)
+    fig.savefig(output/'systems.pdf');plt.close(fig)
     latest=rows[-1]
     url=read(run/'wandb.json')['url'] if (run/'wandb.json').exists() else None
     lines=['# Matching Pairs PS-GRPO progress','',
-        f'Complete through update {latest["update"]}: {latest["training_episodes"]:,} episodes. Latest scores were sampled from policy {latest["collection_policy_version"]}, before its associated optimizer step.',
+        f'Complete through update {latest["update"]}: {latest["new_training_episodes"]:,} episodes in this run; {latest["training_episodes"]:,} in the policy lineage. Latest scores were sampled from policy {latest["collection_policy_version"]}, before its associated optimizer step.',
         '',f'Latest batch: {latest["mean_pairs"]:.4f}/8 pairs, {latest["mean_responses"]:.2f} responses, training reward {latest["mean_shaped_return"]:+.6f}, efficiency reward before penalties {latest["mean_unshaped_efficiency_return"]:+.6f}.',
         '',f'Global batch {config["boards"]*config["group_size"]}, group {config["group_size"]}, seed {config["seed"]}, W={config["window"]}.',
         '', 'Efficiency reward is pairs/8 minus responses/96; the training reward also subtracts 0.02 per format error and native invalid action. RNG-Bench native score is pairs found. These are sampled training boards, not held-out greedy evaluation, a POPGym result, or evidence of causal textual memory.',
@@ -101,6 +111,7 @@ def report(run,output):
     if url:lines.extend(['',f'[W&B]({url})'])
     (output/'README.md').write_text('\n'.join(lines)+'\n')
     provenance=dict(utc=datetime.now(timezone.utc).isoformat(),run_dir=str(run),committed_update=latest['update'],
+        continuation_parent_update=parent,new_training_episodes=latest['new_training_episodes'],
         inputs=sources,committed_state_snapshot=state,resolved_config_snapshot=config,
         plotting_source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         recovery_or_source_continuation_updates=[r['update'] for r in rows if r['recovery_or_source_continuation_cycle']])
