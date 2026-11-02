@@ -141,6 +141,26 @@ def condition(tmp_path, rows, **kwargs):
         window=1024, greedy=True, episodes=str(path), expected_boards=4) | kwargs
 
 
+@pytest.mark.parametrize('split,start,count,cols,pairs,limit', [
+    ('post320_test', 7_000_000, 128, 4, 8, 96),
+    ('post320_larger', 8_000_000, 4, 8, 16, 192),
+])
+def test_post320_report_preserves_fresh_seeds_and_board_protocol(tmp_path, split, start, count, cols, pairs, limit):
+    rows = [dict(episodes()[0], board_seed=start + index, episode_id=f'fresh-b{start + index}',
+        board_rows=4, board_cols=cols, distinct_ranks=8, total_pairs=pairs, score=pairs,
+        response_count=limit // 2, max_responses=limit) for index in range(count)]
+    entry = condition(tmp_path, rows, split=split, expected_boards=count)
+    result = load_condition(entry)
+    assert result['complete_split'] is True
+    assert result['mean_return'] == .5 and result['mean_pairs'] == pairs
+    assert result['total_pairs'] == pairs and result['max_responses'] == limit
+    assert result['evaluation_scope'] == ('window_sweep' if split == 'post320_test' else split)
+    rows[0]['board_seed'] = 5_000_000
+    condition(tmp_path, rows)
+    with pytest.raises(ValueError, match='reserved board seeds'):
+        load_condition(entry)
+
+
 @pytest.mark.parametrize('field,expected,actual', [
     ('policy_version', 16, 0),
     ('policy_identity', 'selected-policy', 'another-policy'),

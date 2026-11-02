@@ -155,11 +155,13 @@ class BoardProtocol:
 
 
 def board_protocol(split):
-    return BoardProtocol(cols=8, max_responses=192) if split in ('larger', 'extension_larger') else BoardProtocol()
+    return BoardProtocol(cols=8, max_responses=192) if split in (
+        'larger', 'extension_larger', 'post320_larger') else BoardProtocol()
 
 
 SPLITS = dict(screening=(1000000, 64), validation=(1100000, 128), test=(2000000, 512), larger=(3000000, 256),
-              intervention=(4000000, 512), extension_test=(5000000, 512), extension_larger=(6000000, 256))
+              intervention=(4000000, 512), extension_test=(5000000, 512), extension_larger=(6000000, 256),
+              post320_test=(7000000, 512), post320_larger=(8000000, 256))
 
 
 def evaluation_specs(config, split, label, *, count=None):

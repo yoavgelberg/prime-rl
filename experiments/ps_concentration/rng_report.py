@@ -101,7 +101,7 @@ def load_condition(entry, *, allow_partial=False):
             metrics[name] = summary.get(name)
     return dict(entry, **metrics, **{key: value for key, value in board.items() if key not in metrics},
         board_seeds_sha256=hashlib.sha256(json.dumps(sorted(seeds)).encode()).hexdigest(),
-        evaluation_scope='window_sweep' if entry['split'] in ('test', 'extension_test') and expected == 128 else entry['split'],
+        evaluation_scope='window_sweep' if entry['split'] in ('test', 'extension_test', 'post320_test') and expected == 128 else entry['split'],
         episodes_file=entry['episodes'], complete_split=len(rows) == expected, rows=rows)
 
 
@@ -300,7 +300,7 @@ def save_tables(result, output):
 def window_series(conditions):
     series = {}
     for row in conditions:
-        if row['attention'] == 'ps' and row['split'] == 'test':
+        if row['attention'] == 'ps' and row['split'] in ('test', 'extension_test', 'post320_test'):
             key = (row['policy'], row['training_seed'], row['board_seeds_sha256'])
             series.setdefault(key, []).append(row)
     for rows in series.values():
