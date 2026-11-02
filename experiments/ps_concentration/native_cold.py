@@ -82,7 +82,7 @@ class NativeCold:
             values[:, :, slot:slot + 1] = v.transpose(1, 2).bfloat16()
             if self.backend == 'dense':
                 output = F.scaled_dot_product_attention(q.bfloat16(), keys, values,
-                    attn_mask=allowed, dropout_p=0., enable_gqa=True)
+                    attn_mask=allowed[None, None, None, :], dropout_p=0., enable_gqa=True)
             else:
                 output = ps_attention(q.bfloat16(), keys, values, self.indices.new_tensor([position]),
                     self.indices, self.prefix, self.window, 'fa4')
