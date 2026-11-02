@@ -15,7 +15,7 @@ from prime_rl.orchestrator.ps_games import GameRolloutRunner, worker_rpc
 from prime_rl.trainer.ps_backward.outcome import OutcomeConfig
 
 from .control import handoff_requested
-from .overlap_config import BoardProtocol, RunConfig, board_protocol, cohorts, episode_metrics, evaluation_specs, evaluation_resources, permutation, protocol_lock, training_specs
+from .overlap_config import BoardProtocol, RunConfig, SPLITS, board_protocol, cohorts, episode_metrics, evaluation_specs, evaluation_resources, permutation, protocol_lock, training_specs
 from .rank_collection import RankCollector
 
 
@@ -111,13 +111,13 @@ async def evaluate_games(config, runner, *, split, output, label, attention='ps'
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     board = board_protocol(split)
-    if split == 'larger' and attention != 'ps':
+    if board.cols == 8 and attention != 'ps':
         raise ValueError('Size generalization uses the selected PS window and greedy decoding')
     identity = dict(policy_version=policy_version, policy_identity=policy_identity or config.revision,
                     attention=attention, window=config.window, greedy=True, **board.identity())
     write_json(output / 'evaluation-protocol.json', dict(config=config.model_dump(), **board.identity(),
         transcript_cap=config.transcript_cap, prompt='Identical native system prompt; board size appears in observations',
-        scope='Parameter-scaled RNG-Bench Matching Pairs' if split == 'larger' else 'Native RNG-Bench Matching Pairs 4x4'))
+        scope='Parameter-scaled RNG-Bench Matching Pairs' if board.cols == 8 else 'Native RNG-Bench Matching Pairs 4x4'))
     specs = [dict(spec, **identity) for spec in evaluation_specs(config, split, label, count=count)]
     write_json(output / 'plan.json', specs)
     rows, pending = [], []
@@ -418,7 +418,7 @@ def main():
     parser.add_argument('mode', choices=['train', 'evaluate'])
     parser.add_argument('--config', required=True)
     parser.add_argument('--attention', choices=['ps', 'full'], default='ps')
-    parser.add_argument('--split', choices=['screening', 'validation', 'test', 'larger', 'intervention'], default='screening')
+    parser.add_argument('--split', choices=list(SPLITS), default='screening')
     parser.add_argument('--checkpoint')
     parser.add_argument('--gpus', type=int, choices=(1, 2, 4, 8), help='Physical evaluation layout; preserves board seeds and controller')
     parser.add_argument('--evaluation-concurrency', type=int, help='Audited full-evaluation games per GPU')
@@ -429,6 +429,8 @@ def main():
     parser.add_argument('--count', type=int, help='Evaluate the first N fixed split boards, e.g. 128 for window sweeps')
     args = parser.parse_args()
     config = RunConfig(**json.loads(Path(args.config).read_text()))
+    if args.mode == 'train' and config.updates > 256:
+        parser.error('The legacy training runner supports at most 256 updates; use hero_v2 for the320 extension')
     config, full_kv_token_bound = evaluation_resources(config, args.gpus, mode=args.mode,
         attention=args.attention, concurrency=args.evaluation_concurrency,
         full_kv_token_bound=args.full_kv_token_bound)

@@ -59,8 +59,8 @@ class RunConfig:
             raise ValueError('Training/reference/tokenizer must use the immutable starting snapshot')
         if len(self.source_sha256) != 64 or any(c not in '0123456789abcdef' for c in self.source_sha256):
             raise ValueError('A captured source archive SHA256 is required')
-        if self.seed not in (11, 22, 33) or not 1 <= self.updates <= 256:
-            raise ValueError('Use the frozen training seeds and at most 256 total updates')
+        if self.seed not in (11, 22, 33) or not 1 <= self.updates <= 320:
+            raise ValueError('Use the frozen training seeds and at most 320 total updates')
         if self.max_responses != 96 or self.transcript_cap != 262144:
             raise ValueError('The accepted native protocol uses 96 attempts and the native 262K transcript ceiling')
         if self.validation_boards != 128 or self.validation_interval != 16:
@@ -155,11 +155,11 @@ class BoardProtocol:
 
 
 def board_protocol(split):
-    return BoardProtocol(cols=8, max_responses=192) if split == 'larger' else BoardProtocol()
+    return BoardProtocol(cols=8, max_responses=192) if split in ('larger', 'extension_larger') else BoardProtocol()
 
 
 SPLITS = dict(screening=(1000000, 64), validation=(1100000, 128), test=(2000000, 512), larger=(3000000, 256),
-              intervention=(4000000, 512))
+              intervention=(4000000, 512), extension_test=(5000000, 512), extension_larger=(6000000, 256))
 
 
 def evaluation_specs(config, split, label, *, count=None):
