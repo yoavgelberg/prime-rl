@@ -59,14 +59,14 @@ class RunConfig:
             raise ValueError('Training/reference/tokenizer must use the immutable starting snapshot')
         if len(self.source_sha256) != 64 or any(c not in '0123456789abcdef' for c in self.source_sha256):
             raise ValueError('A captured source archive SHA256 is required')
-        if self.seed not in (11, 22, 33) or not 1 <= self.updates <= 320:
-            raise ValueError('Use the frozen training seeds and at most 320 total updates')
+        if self.seed not in (11, 22, 33) or not 1 <= self.updates <= 448:
+            raise ValueError('Use the approved training seeds and at most 448 total updates')
         if self.max_responses != 96 or self.transcript_cap != 262144:
             raise ValueError('The accepted native protocol uses 96 attempts and the native 262K transcript ceiling')
         if self.validation_boards != 128 or self.validation_interval != 16:
             raise ValueError('Checkpoint selection uses the frozen 128-board validation split every 16 updates')
-        if self.temperature != .6 or self.kl_coefficient not in (0., .01):
-            raise ValueError('Use temperature .6 and either disabled KL or reference KL coefficient .01')
+        if self.temperature not in (.6, .8) or self.kl_coefficient not in (0., .01):
+            raise ValueError('Use an approved temperature and either disabled KL or reference KL coefficient .01')
 
     def model_dump(self):
         return asdict(self)
