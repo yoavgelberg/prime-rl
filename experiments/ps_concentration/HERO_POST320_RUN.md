@@ -45,3 +45,21 @@ uv run python -m experiments.ps_concentration.rng_overlap evaluate --config EVAL
 ```
 
 Use separate output directories for each checkpoint and attention/window condition. All evaluations are greedy. Window diagnostics use `--window W --count 128` on the first 128 `post320_test` boards and cannot select a checkpoint or window. CPU tests validate split separation, four/eight-GPU board identity, larger-board worker options and report rejection of reused earlier test seeds. These commands do not launch an evaluation during training.
+
+Prepare a fixed evaluation matrix from the continuation plan using a separately captured evaluation source:
+
+```bash
+uv run python -m experiments.ps_concentration.hero_post320_final prepare --plan RUN_DIR/plan.json --output FINAL_DIR --gpus 8 --source-root CAPTURED_EVALUATION_SOURCE --source-sha256 ARCHIVE_SHA256
+```
+
+The plan fixes update448, parent320 and the original checkpoint before inspecting the fresh tests. It includes512standardboards perpolicy, first128boards for extra windows256/512/2048/4096,256largerboards perpolicy, and a separate512-board intervention collection for the continued policy. W1024sweep points derive from the first128matching standard records. Three full-attention conditions are prepared separately. No test outcome selects a checkpoint or window.
+
+After verified completion of all448training updates and retirement of training workers:
+
+```bash
+uv run python -m experiments.ps_concentration.hero_post320_final run --plan FINAL_DIR/plan.json --gpus 8
+uv run python -m experiments.ps_concentration.hero_post320_final memory --plan FINAL_DIR/plan.json --gpus 8
+uv run python -m experiments.ps_concentration.hero_post320_final run --plan FINAL_DIR/plan.json --gpus 8 --phase full
+```
+
+The default run executes PS conditions. Full attention is an explicit later phase. The memory command preserves the reserved4Msplit, prethinking qualification,128-state maximum,32-state conclusion minimum and common cold rebuild for unedited/swap/sham branches. It counts every qualified state and leaves insufficient evidence visible. Both commands reject incomplete training before any GPU work and resume only fixed, verified policy archives and condition configurations. Four-GPU fallback changes physical execution while preserving the same boards, controller and checkpoint identities. Use available private HAIC storage for final outputs when shared scratch headroom is insufficient.
