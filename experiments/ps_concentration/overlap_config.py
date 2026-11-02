@@ -59,8 +59,8 @@ class RunConfig:
             raise ValueError('Training/reference/tokenizer must use the immutable starting snapshot')
         if len(self.source_sha256) != 64 or any(c not in '0123456789abcdef' for c in self.source_sha256):
             raise ValueError('A captured source archive SHA256 is required')
-        if self.seed not in (11, 22, 33) or not 1 <= self.updates <= 448:
-            raise ValueError('Use the approved training seeds and at most 448 total updates')
+        if self.seed not in (11, 22, 33) or type(self.updates) is not int or not 1 <= self.updates <= 62500:
+            raise ValueError('Use an approved seed and a positive horizon within the million-board pool')
         if self.max_responses != 96 or self.transcript_cap != 262144:
             raise ValueError('The accepted native protocol uses 96 attempts and the native 262K transcript ceiling')
         if self.validation_boards != 128 or self.validation_interval != 16:

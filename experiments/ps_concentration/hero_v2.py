@@ -206,6 +206,18 @@ def kl_estimator(config, update):
         and update >= config.exact_kl_start_update else 'k3')
 
 
+def stop_after_update(config):
+    path = Path(config.output) / 'stop-after-update.json'
+    if not path.exists():
+        return config.updates
+    request = read(path)
+    target = request['after_update']
+    if (request['identity'] != identity(config) or type(target) is not int
+            or not 1 <= target <= config.updates):
+        raise ValueError('A graceful stop must preserve this training identity and horizon')
+    return target
+
+
 def validate_resume_identity(saved, config, *, policy_version=None):
     expected = identity(config)
     if saved == expected:
@@ -391,7 +403,8 @@ def trainer_main(config, rank, port):
             metadata = dict(policy_version=update, bytes=path.stat().st_size,
                 identity=identity(config), checkpoint_path=str(path.resolve()), utc=utc())
             write(path.with_suffix('.pt.json'), metadata)
-            if update % config.export_interval == 0 or update == config.updates:
+            if (update % config.export_interval == 0 or update == config.updates
+                    or (node / f'checkpoint-final-{update:04d}').exists()):
                 export = Path(config.node_dir).parent / 'candidate-policies' / f'policy-{update:04d}'
                 export.mkdir(parents=True, exist_ok=True)
                 policy.config.save_pretrained(export)
@@ -598,6 +611,8 @@ def coordinator(config, config_path):
         prior_seconds = 300.
         for update in range(version+1,config.updates+1):
             healthy()
+            if update > stop_after_update(config):
+                break
             if config.deadline-time.time() < max(900.,prior_seconds*1.3+300):
                 write(root/'allocation-handoff.json',dict(policy_version=version,utc=utc(),job=os.environ['SLURM_JOB_ID']))
                 break
@@ -649,7 +664,7 @@ def coordinator(config, config_path):
                     policy_version=version,completed=len(results),total=config.batch_size,
                     partial_metrics=aggregate(config,list(results.values())),seconds=time.perf_counter()-started))
                 time.sleep(.5)
-            final=update==config.updates or config.deadline-time.time()<max(900.,prior_seconds*1.3+300)
+            final=update>=stop_after_update(config) or config.deadline-time.time()<max(900.,prior_seconds*1.3+300)
             if final:
                 (node/f'checkpoint-final-{update:04d}').touch()
             write(node/f'step-{update:04d}.json',dict(update=update))
@@ -704,8 +719,10 @@ def coordinator(config, config_path):
         write(node/'stop',dict(policy_version=version,utc=utc()))
         for _,_,child in children:
             child.wait(timeout=300.)
-        write(root/'training-complete.json',dict(policy_version=version,target=config.updates,
-            reached_target=version==config.updates,utc=utc(),checkpoint=str(latest)))
+        target = stop_after_update(config)
+        write(root/'training-complete.json',dict(policy_version=version,target=target,
+            configured_horizon=config.updates, requested_stop=target != config.updates,
+            reached_target=version>=target,utc=utc(),checkpoint=str(latest)))
     finally:
         write(node/'stop',dict(policy_version=version,utc=utc()))
         for _,_,child in children:
