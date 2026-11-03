@@ -86,6 +86,62 @@ def test_new_association_syntax_excludes_actions_embedded_coordinates_and_incomp
     assert associations(dict(tokens=tokens, roles=['assistant'] * len(tokens)), tokenizer, 0, len(tokens)) == []
 
 
+@pytest.mark.parametrize('text', [
+    '- cB was 4', '- cB was a 4', '- cB was rank 4',
+    "They've seen 4 (cB)", "They've seen 4 (aB, cB)",
+])
+def test_past_tense_and_rank_first_groups_recover_observed_retained_reminders(text):
+    tokenizer = SpaceRowTokenizer()
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    notes = associations(record, tokenizer, 0, len(tokens))
+    assert any(note['position'] == 'cB' and note['rank'] == '4' for note in notes)
+    for note in notes:
+        assert tokenizer.decode(tokens[note['start']:note['end']]).strip() == note['position']
+    record['roles'] = ['environment_template'] * len(tokens)
+    assert associations(record, tokenizer, 0, len(tokens)) == []
+
+
+def test_rank_first_groups_preserve_individual_coordinate_spans_and_equal_length_edits():
+    tokenizer = SpaceRowTokenizer()
+    text = "Previously seen: 5 (aA), 4 (aB, cB), 0 (bB), 3 (cA)."
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    notes = associations(record, tokenizer, 0, len(tokens))
+    assert [(note['position'], note['rank']) for note in notes] == [
+        ('aA', '5'), ('aB', '4'), ('cB', '4'), ('bB', '0'), ('cA', '3')]
+    edits = swap_edits(notes, 'cB', 'cA', record, tokenizer)
+    changed = tokens[:]
+    for edit in edits:
+        changed[edit['start']:edit['end']] = edit['new']
+    assert tokenizer.decode(changed) == text.replace('cB', 'TEMP').replace('cA', 'cB').replace('TEMP', 'cA')
+    assert len(changed) == len(tokens) and edit_size(edits) == (4, 2)
+
+
+@pytest.mark.parametrize('text', [
+    'Action: cB was 4', 'Action: 4 (aB, cB)', 'FLIP 4 (aB, cB)',
+    'cB was not 4', 'cB was face-down', 'cB was matched',
+    '4 (aB or cB)', '4 (aB, unknown)', 'v4 (cB)', '4 (cB',
+])
+def test_extended_note_syntax_rejects_action_lines_negation_and_incomplete_groups(text):
+    tokenizer = CharacterTokenizer()
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    assert associations(record, tokenizer, 0, len(tokens)) == []
+
+
+def test_rank_first_note_must_keep_the_rank_and_coordinate_in_retained_sampled_text():
+    tokenizer = CharacterTokenizer()
+    text = '4 (aB, cB)'
+    tokens = tokenizer.encode(text)
+    record = dict(tokens=tokens, roles=['assistant'] * len(tokens))
+    assert len(associations(record, tokenizer, 0, len(tokens))) == 2
+    assert associations(record, tokenizer, text.index('aB'), len(tokens)) == []
+    split = text.index('cB')
+    record['roles'][:split] = ['thinking_budget'] * split
+    assert associations(record, tokenizer, 0, len(tokens)) == []
+
+
 def test_token_bound_bullets_allow_equal_swap_and_sham_without_changing_observations():
     record, game = fixture('- aA=0\n- aB=1\n- aC=2\n- aD=3')
     tokenizer = SpaceRowTokenizer()

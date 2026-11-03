@@ -11,9 +11,21 @@ import re
 from .rng_memory_metrics import ANALYSIS_VERSION, known_match_decisions
 
 
-ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*(?::|=|->|→|\bis\b)\s*(?:a\s+)?(?:rank\s*)?(\d+)(?!\d)', re.I)
+ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*(?::|=|->|→|\bis\b|\bwas\b)\s*(?:a\s+)?(?:rank\s*)?(\d+)(?!\d)', re.I)
 PARENTHETICAL_ASSOCIATION = re.compile(r'(?<![A-Za-z])([a-d][A-D])\s*\(\s*(?:rank\s*)?(\d+)\s*\)', re.I)
-ASSOCIATION_VERSION = 'explicit-coordinate-rank-v3-parentheses-and-articles'
+RANKED_POSITION_GROUP = re.compile(
+    r'(?<![A-Za-z0-9])(\d+)\s*\(\s*([a-d][A-D](?:\s*,\s*[a-d][A-D])*)\s*\)', re.I)
+ASSOCIATION_VERSION = 'explicit-coordinate-rank-v4-was-and-ranked-lists'
+
+
+def association_matches(text):
+    for pattern in (ASSOCIATION, PARENTHETICAL_ASSOCIATION):
+        for match in pattern.finditer(text):
+            yield match[1], match[2], match.span(1), match.start(), match.end()
+    for group in RANKED_POSITION_GROUP.finditer(text):
+        for match in re.finditer(r'[a-d][A-D]', group[2], flags=re.I):
+            span = tuple(group.start(2) + offset for offset in match.span())
+            yield match[0], group[1], span, group.start(), group.end()
 
 
 def action_line(text):
@@ -58,21 +70,18 @@ def associations(record, tokenizer, start, end, manual=()):
             finish += 1
         tokens = record['tokens'][position:finish]
         text = tokenizer.decode(tokens, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        matches = itertools.chain.from_iterable(pattern.finditer(text)
-            for pattern in (ASSOCIATION, PARENTHETICAL_ASSOCIATION))
-        for match in matches:
-            line_end = text.find('\n', match.end())
-            line = text[text.rfind('\n', 0, match.start()) + 1:line_end if line_end >= 0 else len(text)]
+        for coordinate, rank, character_span, begin, end_match in association_matches(text):
+            line_end = text.find('\n', end_match)
+            line = text[text.rfind('\n', 0, begin) + 1:line_end if line_end >= 0 else len(text)]
             if action_line(line):
                 continue
-            coordinate = match[1]
-            span = coordinate_span(tokenizer, tokens, text, *match.span(1))
+            span = coordinate_span(tokenizer, tokens, text, *character_span)
             if span is None or not re.fullmatch(r'[a-d][A-D]', coordinate):
                 continue
             lo, hi, surface = span
             if surface.strip(' \t') != coordinate:
                 continue
-            notes.append(dict(position=coordinate, surface=surface, rank=match[2], start=position + lo, end=position + hi,
+            notes.append(dict(position=coordinate, surface=surface, rank=rank, start=position + lo, end=position + hi,
                 recognition='Explicit generated coordinate/rank association; adjacent token-bound spaces preserved'))
         position = finish
     for item in manual:
