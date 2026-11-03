@@ -29,8 +29,8 @@ def training_rows(config):
     state = snapshot['state']
     version = state['policy_version']
     if (snapshot['config'] != json.loads(json.dumps(asdict(config))) or state['identity'] != identity(config)
-            or not 320 <= version <= 448):
-        raise ValueError('Report the declared continuation identity and committed320–448 updates')
+            or not 320 <= version <= config.updates):
+        raise ValueError(f'Report the declared continuation identity and committed320–{config.updates} updates')
     rows = []
     for update in range(321, version + 1):
         path = root / f'update-metrics/update-{update:04d}.json'
@@ -81,7 +81,7 @@ def comparison(conditions, final):
         treatment=treatment['name'], control=control['name'],
         treatment_return=treatment['mean_return'], control_return=control['mean_return'],
         independent_training_lineages=1, training_seed_std=None,
-        scope='Fixed448 minus PS-trained parent320; not a trained Full-RL control or a temperature-only effect')
+        scope=f"Frozen update{final.get('fixed_final_update', 448)} minus PS-trained parent320; not a trained Full-RL control or a temperature-only effect")
 
 
 def memory_result(final_path, final):
@@ -163,9 +163,11 @@ def figures(curve, windows, conditions, output):
 def report(final_path, output, *, allow_partial=False):
     final_path, output = Path(final_path), Path(output)
     final = read(final_path)
-    if (final['format'] != 'hero-post320-final-v1' or final['fixed_final_update'] != 448
+    if (final['format'] not in ('hero-post320-final-v1', 'hero-goal25-final-v1')
+            or (final['format'] == 'hero-post320-final-v1' and final['fixed_final_update'] != 448)
             or final['baseline_update'] != 320 or file_hash(final['plan']) != final['plan_sha256']):
         raise ValueError('Use the frozen post320 training and fixed448 test plans')
+    target = final['fixed_final_update']
     configs = configurations(read(final['plan']))
     curve, sources, snapshot = training_rows(configs['continued'])
     committed = snapshot['state']['policy_version']
@@ -182,12 +184,12 @@ def report(final_path, output, *, allow_partial=False):
         for path in (entry['summary'], condition['episodes_file'], entry['argv'][entry['argv'].index('--config') + 1]):
             sources[path] = file_hash(path)
         available.append(condition)
-    if available and committed != 448:
-        raise ValueError('Fixed448 test results cannot precede completion of training')
+    if available and committed != target:
+        raise ValueError(f'Frozen update{target} test results cannot precede completion of training')
     memory = memory_result(final_path, final)
-    pending = committed != 448 or bool(missing) or memory is None
+    pending = committed != target or bool(missing) or memory is None
     if pending and not allow_partial:
-        raise ValueError('Final results require448 committed updates, every evaluation and the memory analysis')
+        raise ValueError(f'Final results require{target} committed updates, every evaluation and the memory analysis')
     output.mkdir(parents=True, exist_ok=True)
     write(output / 'training-state.json', snapshot['state'])
     write(output / 'resolved_config.json', snapshot['config'])
@@ -244,7 +246,7 @@ def report(final_path, output, *, allow_partial=False):
             'Readable notes and PS performance alone do not establish causal use of generated text'])
     write(output / 'results.json', result)
     lines = ['# W1024 continuation results', '', f'Status: {result["status"]}. ' + final['scope'], '',
-        f'Training committed through {committed}/448. Missing evaluation conditions: {len(missing)}. '
+        f'Training committed through {committed}/{target}. Missing evaluation conditions: {len(missing)}. '
         f'Memory analysis missing: {memory is None}.', '',
         '| Policy | Attention | Pairs /8 | Responses | Efficiency reward | With error penalties |',
         '|---|---|---:|---:|---:|---:|']
@@ -255,7 +257,7 @@ def report(final_path, output, *, allow_partial=False):
                 f'{row["mean_shaped_reward"]:+.4f} |')
     paired = result['paired_comparison']
     if paired is not None:
-        lines += ['', f'Fixed448 minus parent320 PS1024 efficiency: {paired["mean_difference"]:+.6f}, '
+        lines += ['', f'Frozen update{target} minus parent320 PS1024 efficiency: {paired["mean_difference"]:+.6f}, '
             f'95% paired board-bootstrap interval {paired["ci95"]} (10,000 resamples).']
     lines += ['', 'Native score is pairs found. Efficiency is pairs/8 minus responses/96; '
         'the training reward also subtracts0.02per format error and native invalid action. '

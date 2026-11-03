@@ -18,12 +18,25 @@ from .overlap_config import FULL_EVALUATION_CONCURRENCY, FULL_EVALUATION_TOKEN_B
 
 
 def configurations(plan):
-    if (plan['format'] != 'hero-w1024-post320-v1' or plan['parent_policy_version'] != 320
+    goal_stop = plan['format'] == 'hero-w1024-goal25-frozen-v1'
+    if not goal_stop and (plan['format'] != 'hero-w1024-post320-v1'
             or plan['initial_target_update'] != 448):
         raise ValueError('Preserve the declared320 parent and fixed448 continuation budget')
-    parent = HeroConfig(**read(Path(plan['parent_run']) / 'resolved_config.json'))
-    continued = HeroConfig(**read(Path(plan['output']) / 'resolved_config.json'))
-    if (parent.updates != 320 or parent.window != 1024 or continued.updates != 448
+    if plan['parent_policy_version'] != 320:
+        raise ValueError('Preserve the declared320 parent')
+    snapshots = plan.get('configuration_snapshots', {}) if goal_stop else {}
+    def load(label, fallback):
+        entry = snapshots.get(label)
+        path = Path(entry['path']) if entry else fallback
+        if entry and file_hash(path) != entry['sha256']:
+            raise ValueError('Preserve the frozen configuration snapshots')
+        return HeroConfig(**read(path))
+    parent = load('parent320', Path(plan['parent_run']) / 'resolved_config.json')
+    continued = load('continued', Path(plan['output']) / 'resolved_config.json')
+    target = plan['final_update'] if goal_stop else 448
+    horizon = plan['configured_horizon'] if goal_stop else 448
+    if (isinstance(target, bool) or not isinstance(target, int) or not 448 <= target <= horizon
+            or parent.updates != 320 or parent.window != 1024 or continued.updates != horizon
             or continued.window != 1024 or continued.temperature != .8
             or continued.continuation_start_update != 320 or identity(continued) != plan['identity']):
         raise ValueError('The final test must follow the same declared W1024 continuation')
@@ -48,11 +61,13 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
     plan = read(plan_path)
     configs = configurations(plan)
     cache = Path('/dev/shm/ps-hero-post320-final-cache') / file_hash(plan_path)[:16]
+    target = plan.get('final_update', 448)
+    goal_stop = plan['format'] == 'hero-w1024-goal25-frozen-v1'
     entries = []
 
     def add(label, attention='ps', window=1024, *, split='post320_test', count=512):
         config = configs['continued' if label == 'base' else label]
-        version = dict(continued=448, parent320=320, base=0)[label]
+        version = dict(continued=target, parent320=320, base=0)[label]
         name = f'{label}-{attention}-w{window}-{split}' + ('-first128' if count == 128 else '')
         folder = output / name
         inference = replace(inference_config(config, output=folder, gpus=gpus), window=window,
@@ -62,7 +77,7 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
         argv = ['python', '-m', 'experiments.ps_concentration.rng_overlap', 'evaluate',
             '--config', str(config_path), '--attention', attention, '--split', split, '--count', str(count)]
         checkpoint = cache / label if version else None
-        archive = (Path(plan['output']) / 'policy-archives/w1024-0448' if label == 'continued'
+        archive = (Path(plan['output']) / f'policy-archives/w1024-{target:04d}' if label == 'continued'
             else Path(plan['parent_run']).parents[1] / 'policy-archives/w1024-0320') if version else None
         if checkpoint:
             argv.extend(['--checkpoint', str(checkpoint)])
@@ -87,14 +102,15 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
         add(label, split='post320_larger', count=256)
     for label in ('continued', 'parent320', 'base'):
         add(label, attention='full')
-    result = dict(format='hero-post320-final-v1', plan=str(plan_path), plan_sha256=file_hash(plan_path),
+    result = dict(format='hero-goal25-final-v1' if goal_stop else 'hero-post320-final-v1', plan=str(plan_path), plan_sha256=file_hash(plan_path),
         evaluation_source_root=str(source_root), evaluation_source_sha256=source_sha256,
-        gpus=gpus, fixed_final_update=448, baseline_update=320, conditions=entries,
+        gpus=gpus, fixed_final_update=target, baseline_update=320, conditions=entries,
         primary=['continued-ps-w1024-post320_test', 'parent320-ps-w1024-post320_test'],
         original_baseline='base-ps-w1024-post320_test',
         full_attention_conditions=[row['condition'] for row in entries if row['attention'] == 'full'],
         default_phase='ps', primary_metric='Unshaped efficiency: pairs/8 - responses/96',
-        checkpoint_rule='Fixed448 only; no test-based checkpoint or window selection',
+        checkpoint_rule=(f'Goal-stopped update{target}; no test-based checkpoint or window selection' if goal_stop
+            else 'Fixed448 only; no test-based checkpoint or window selection'),
         diagnostic_windows=[256, 512, 1024, 2048, 4096],
         derived_window_1024='First128records of each matching complete512-boardPS1024condition',
         intervention=dict(split='intervention', first_board_seed=4000000, last_board_seed=4000511,
@@ -103,7 +119,7 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
         evaluation_capacity=dict(ps_games_per_gpu=64, full_games_per_gpu=16,
             full_kv_token_bound=FULL_EVALUATION_TOKEN_BOUND),
         scope='Exploratory single-lineage W1024 continuation after inspecting earlier5Mtests. '
-            'Fresh7Mstandard and8Mlargerboards; original/parent320/final448 share the prompt and controller. '
+            f'Fresh7Mstandard and8Mlargerboards; original/parent320/final{target} share the prompt and controller. '
             'Parent320 is PS-trained, not a Full-RL control. Numerical native/learner parity remains unresolved.')
     save_fixed(output / 'plan.json', result)
     return result
@@ -116,7 +132,7 @@ def inputs(final_path):
         raise ValueError('Preserve the frozen continuation plan')
     configs = configurations(read(final['plan']))
     config = configs['continued']
-    ready(config.output, dict(training_barrier=448, training_identity=identity(config)))
+    ready(config.output, dict(training_barrier=final['fixed_final_update'], training_identity=identity(config)))
     source = Path(final['evaluation_source_root'])
     if (source.resolve() != Path(__file__).parents[2].resolve()
             or file_hash(source.with_suffix('.tar.gz')) != final['evaluation_source_sha256']):
