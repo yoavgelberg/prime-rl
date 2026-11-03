@@ -9,3 +9,11 @@ To finish after a complete optimizer step, write `RUN_DIR/stop-after-update.json
 Assess the approximate 25-turn target over eight consecutive complete batches (1024 sampled games), including failures and all invalid/format attempts. A working operational criterion is mean responses at most 25.5, at least 99% completion and mean pairs at least 7.99. These are sampled-training stopping diagnostics, not held-out results or evidence that scratch text causes the memory. Keep the prompt unchanged and inspect old-reveal utilization, retained associations and later separate-seed interventions.
 
 The previously prepared fixed-448 evaluation plan remains preserved but deferred. Freeze the final policy and updated evaluation plan before inspecting fresh held-out boards. Continue logging to the same W&B run and save rolling full checkpoints every five updates.
+
+After the training-only turn target is met and the final full checkpoint and inference export are verified, freeze the actual stopped policy before inspecting fresh boards:
+
+```bash
+uv run python -m experiments.ps_concentration.hero_goal25_final --run-dir RUN_DIR --output FINAL_DIR --gpus 4 --source-root CAPTURED_SOURCE --source-sha256 ARCHIVE_SHA256
+```
+
+This command validates the completed training marker, graceful-stop identity and every batch in the declared stopping window, then records immutable parent/continued configuration snapshots. The resulting `FINAL_DIR/plan.json` preserves the fresh7M/8M board ranges and separate4M intervention collection, uses the actual stopped version, and defaults to PS evaluations. Run it with `hero_post320_final run --plan FINAL_DIR/plan.json --gpus 4 --phase ps`; the same module's `memory` command runs the later common-cold intervention branches. Generate tables and figures using `hero_post320_report --final-plan FINAL_DIR/plan.json --output REPORT_DIR`. The original fixed448 plan remains preserved as historical preparation. These commands do not authorize GPU evaluations while the user has prioritized continued training.
