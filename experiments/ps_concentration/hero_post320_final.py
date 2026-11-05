@@ -18,12 +18,18 @@ from .overlap_config import FULL_EVALUATION_CONCURRENCY, FULL_EVALUATION_TOKEN_B
 
 
 def configurations(plan):
-    goal_stop = plan['format'] == 'hero-w1024-goal25-frozen-v1'
+    goal_stop = plan['format'] in ('hero-w1024-goal25-frozen-v1', 'hero-w1024-user-budget-frozen-v1')
     if not goal_stop and (plan['format'] != 'hero-w1024-post320-v1'
             or plan['initial_target_update'] != 448):
         raise ValueError('Preserve the declared320 parent and fixed448 continuation budget')
     if plan['parent_policy_version'] != 320:
         raise ValueError('Preserve the declared320 parent')
+    if plan['format'] == 'hero-w1024-user-budget-frozen-v1':
+        evidence = Path(plan['stopping_evidence'])
+        if (file_hash(evidence) != plan['stopping_evidence_sha256']
+                or read(evidence)['reason'] != 'explicit_user_budget'
+                or read(evidence)['requested_update'] != plan['final_update']):
+            raise ValueError('Preserve the explicit user budget and its frozen evidence')
     snapshots = plan.get('configuration_snapshots', {}) if goal_stop else {}
     def load(label, fallback):
         entry = snapshots.get(label)
@@ -62,7 +68,8 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
     configs = configurations(plan)
     cache = Path('/dev/shm/ps-hero-post320-final-cache') / file_hash(plan_path)[:16]
     target = plan.get('final_update', 448)
-    goal_stop = plan['format'] == 'hero-w1024-goal25-frozen-v1'
+    goal_stop = plan['format'] in ('hero-w1024-goal25-frozen-v1', 'hero-w1024-user-budget-frozen-v1')
+    budget_stop = plan['format'] == 'hero-w1024-user-budget-frozen-v1'
     entries = []
 
     def add(label, attention='ps', window=1024, *, split='post320_test', count=512):
@@ -102,14 +109,16 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
         add(label, split='post320_larger', count=256)
     for label in ('continued', 'parent320', 'base'):
         add(label, attention='full')
-    result = dict(format='hero-goal25-final-v1' if goal_stop else 'hero-post320-final-v1', plan=str(plan_path), plan_sha256=file_hash(plan_path),
+    result = dict(format=('hero-user-budget-final-v1' if budget_stop else
+        'hero-goal25-final-v1' if goal_stop else 'hero-post320-final-v1'), plan=str(plan_path), plan_sha256=file_hash(plan_path),
         evaluation_source_root=str(source_root), evaluation_source_sha256=source_sha256,
         gpus=gpus, fixed_final_update=target, baseline_update=320, conditions=entries,
         primary=['continued-ps-w1024-post320_test', 'parent320-ps-w1024-post320_test'],
         original_baseline='base-ps-w1024-post320_test',
         full_attention_conditions=[row['condition'] for row in entries if row['attention'] == 'full'],
         default_phase='ps', primary_metric='Unshaped efficiency: pairs/8 - responses/96',
-        checkpoint_rule=(f'Goal-stopped update{target}; no test-based checkpoint or window selection' if goal_stop
+        checkpoint_rule=(plan['checkpoint_rule'] if budget_stop else
+            f'Goal-stopped update{target}; no test-based checkpoint or window selection' if goal_stop
             else 'Fixed448 only; no test-based checkpoint or window selection'),
         diagnostic_windows=[256, 512, 1024, 2048, 4096],
         derived_window_1024='First128records of each matching complete512-boardPS1024condition',
@@ -121,6 +130,8 @@ def prepare(plan_path, output, *, gpus, source_root, source_sha256):
         scope='Exploratory single-lineage W1024 continuation after inspecting earlier5Mtests. '
             f'Fresh7Mstandard and8Mlargerboards; original/parent320/final{target} share the prompt and controller. '
             'Parent320 is PS-trained, not a Full-RL control. Numerical native/learner parity remains unresolved.')
+    if budget_stop:
+        result['training_stop'] = read(plan['stopping_evidence'])
     save_fixed(output / 'plan.json', result)
     return result
 

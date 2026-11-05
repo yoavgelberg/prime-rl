@@ -163,7 +163,7 @@ def figures(curve, windows, conditions, output):
 def report(final_path, output, *, allow_partial=False):
     final_path, output = Path(final_path), Path(output)
     final = read(final_path)
-    if (final['format'] not in ('hero-post320-final-v1', 'hero-goal25-final-v1')
+    if (final['format'] not in ('hero-post320-final-v1', 'hero-goal25-final-v1', 'hero-user-budget-final-v1')
             or (final['format'] == 'hero-post320-final-v1' and final['fixed_final_update'] != 448)
             or final['baseline_update'] != 320 or file_hash(final['plan']) != final['plan_sha256']):
         raise ValueError('Use the frozen post320 training and fixed448 test plans')
@@ -236,6 +236,7 @@ def report(final_path, output, *, allow_partial=False):
         conditions=[{key:value for key, value in row.items() if key != 'rows'} for row in available],
         intervention=memory, input_sha256=sources, training_snapshot=snapshot,
         independent_training_lineages=1, training_seed_std=None,
+        training_stop=final.get('training_stop'),
         analysis_implementation={name:file_hash(Path(__file__).with_name(name)) for name in
             ('hero_post320_report.py', 'rng_report.py', 'rng_memory_metrics.py', 'rng_trace.py',
              'rng_intervention_summary.py', 'hero_memory.py')},
@@ -250,6 +251,11 @@ def report(final_path, output, *, allow_partial=False):
         f'Memory analysis missing: {memory is None}.', '',
         '| Policy | Attention | Pairs /8 | Responses | Efficiency reward | With error penalties |',
         '|---|---|---:|---:|---:|---:|']
+    if result['training_stop'] is not None:
+        stop = result['training_stop']
+        lines[6:6] = [f"Checkpoint selected by explicit user budget: update{stop['requested_update']}. "
+            f"Performance target met in the final stopping window: {stop['performance_target_met']}; "
+            f"mean responses {stop['mean_responses']:.6f}.", '']
     for row in available:
         if row['split'] == 'post320_test' and row['expected_boards'] == 512:
             lines.append(f'| {row["arm"]} v{row["policy_version"]} | {row["attention"]} W{row["window"]} | '
