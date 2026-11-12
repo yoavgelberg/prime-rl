@@ -46,6 +46,34 @@ def copy_qwen3_weights(source, target):
     )
 
 
+
+@torch.no_grad()
+def update_inference_weights(source, target):
+    """Copy FP32 masters into native dense Qwen3 weights without changing storage."""
+    target.model.embed_tokens.weight.copy_(source.model.embed_tokens.weight)
+    target.model.norm.weight.copy_(source.model.norm.weight)
+    target.lm_head.weight.copy_(source.lm_head.weight)
+    for src, dst in zip(source.model.layers, target.model.layers, strict=True):
+        for name in ("input_layernorm", "post_attention_layernorm"):
+            getattr(dst, name).weight.copy_(getattr(src, name).weight)
+        sa, da = src.self_attn, dst.self_attn
+        offset = 0
+        for name in ("q_proj", "k_proj", "v_proj"):
+            projection = getattr(sa, name)
+            width = projection.weight.shape[0]
+            da.qkv_proj.weight[offset:offset + width].copy_(projection.weight)
+            if da.qkv_proj.bias is not None:
+                da.qkv_proj.bias[offset:offset + width].copy_(projection.bias)
+            offset += width
+        da.o_proj.weight.copy_(sa.o_proj.weight)
+        da.q_norm.weight.copy_(sa.q_norm.weight)
+        da.k_norm.weight.copy_(sa.k_norm.weight)
+        gate, up = dst.mlp.gate_up_proj.weight.chunk(2)
+        gate.copy_(src.mlp.gate_proj.weight)
+        up.copy_(src.mlp.up_proj.weight)
+        dst.mlp.down_proj.weight.copy_(src.mlp.down_proj.weight)
+
+
 def load_backward_model(runner, window):
     from transformers import AutoModelForCausalLM
 
@@ -54,4 +82,6 @@ def load_backward_model(runner, window):
     base.to_empty(device=torch.device("cuda", torch.cuda.current_device()))
     base.tie_weights()
     copy_qwen3_weights(runner_model(runner), base)
-    return QwenPS(base, window, fp32_linear_gradients=True)
+    model = QwenPS(base, window, fp32_linear_gradients=True)
+    model.recorded_native_weight_dtype = torch.bfloat16
+    return model

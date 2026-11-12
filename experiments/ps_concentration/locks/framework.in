@@ -1,0 +1,11 @@
+jaxtyping==0.3.2
+beartype==0.21.0
+wandb==0.26.0
+pandas==2.3.3
+tomli==2.2.1
+tomli-w==1.2.0
+pydantic-settings==2.16.1
+pyzmq==27.2.0
+loguru==0.7.3
+httpx==0.28.1
+msgspec==0.22.0

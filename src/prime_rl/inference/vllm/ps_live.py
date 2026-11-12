@@ -42,13 +42,15 @@ class LiveBackward:
         self.config, self.warmup = tape.config, warmup
         self.chunk = self.config.chunk_tokens
         model.recorded_fp32_attention = self.config.fp32_attention
+        model.recorded_score_temperature = self.config.score_temperature
+        model.recorded_loss_denominator = self.config.loss_denominator
         model.recorded_joint_qkv = self.config.joint_qkv
         model.recorded_direct_weight_gradients = self.config.direct_weight_gradients
         model.recorded_weight_gradient_backend = self.config.weight_gradient_backend
         model.recorded_compact_kv = self.config.compact_kv or self.config.kv_cache
         with torch.inference_mode(False), torch.enable_grad():
             self.inputs = torch.empty((tape.slots * tape.capacity, 1), device=model.device, dtype=torch.long)
-            self.targets = torch.empty_like(self.inputs)
+            self.targets = torch.full_like(self.inputs, -100)
         self.graph_cache = graph_cache if graph_cache is not None else RecordedGraphCache(model, self.chunk)
         decoder = runner.model.runnable if hasattr(runner.model, "runnable") else runner.model
         self.ropes = [layer.self_attn.rotary_emb.cos_sin_cache for layer in decoder.model.layers]
@@ -95,7 +97,7 @@ class LiveBackward:
         self.tasks.put(item)
         self.cpu_backpressure_seconds += time.perf_counter() - start
 
-    def observe(self, runner, sampler_output, spec_decode_metadata):
+    def observe(self, runner, sampler_output, spec_decode_metadata, *, loss_targets=None):
         from .ps_capture import _write
 
         self._check()
@@ -103,14 +105,17 @@ class LiveBackward:
             raise ValueError("Initial recorded streaming integration requires ordinary autoregressive sampling")
         count = int(runner.query_start_loc.np[runner.input_batch.num_reqs])
         _write((runner.input_ids.gpu[:count, None],), self.inputs, self.tape.token_slots)
-        _write((sampler_output.sampled_token_ids,), self.targets, self.tape.head_slots)
+        labels = sampler_output.sampled_token_ids if loss_targets is None else loss_targets
+        if labels.shape != sampler_output.sampled_token_ids.shape:
+            raise ValueError("Role-masked targets must match the sampled-token batch")
+        _write((labels,), self.targets, self.tape.head_slots)
         ready = []
         for row, request in enumerate(runner.input_batch.req_ids):
             state = runner.requests[request]
             if request not in self.prefixes:
                 params = state.sampling_params
                 if (
-                    params.temperature != 1.0
+                    params.temperature != self.config.score_temperature
                     or params.top_p != 1.0
                     or params.top_k not in (-1, 0)
                     or params.repetition_penalty != 1.0
@@ -124,7 +129,7 @@ class LiveBackward:
                     or params.bad_words
                     or params.structured_outputs
                 ):
-                    raise ValueError("Score reuse currently requires unfiltered unit-temperature sampling")
+                    raise ValueError("Score reuse requires unfiltered sampling at the configured score temperature")
                 if state.num_prompt_tokens > self.chunk:
                     raise ValueError("The prompt must fit chunk_tokens; increase the chunk and ring sizes")
                 self.prefixes[request] = state.num_prompt_tokens
@@ -288,9 +293,7 @@ class LiveBackward:
                     pass
                 else:
                     raise RuntimeError("Layerwise tail yielded an unexpected extra stage")
-                for parameter in stream.parameters.values():
-                    if parameter.grad is not None:
-                        parameter.grad.div_(stream.loss_tokens)
+                stream.normalize_gradients()
                 if stream.kv_cache is not None:
                     stream.kv_cache.clear()
 
@@ -493,7 +496,9 @@ class LiveBackward:
             activation_storage=self.host_tape.report(),
             requests={
                 request: dict(
-                    loss=(stream.loss / stream.loss_tokens).item(),
+                    loss=(stream.loss / max(stream.loss_tokens, 1)).item(),
+                    loss_denominator=stream.loss_denominator,
+                    score_temperature=stream.score_temperature,
                     loss_tokens=stream.loss_tokens,
                     peak_live_token_layers=stream.schedule.peak_live_token_layers,
                     retired_tokens=stream.schedule.retired_tokens,

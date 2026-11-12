@@ -18,6 +18,7 @@ from .recorded import (
 from .recorded_cache import KVWorkingSet
 from .recorded_qkv import prepare_qkv_weights, recorded_qkv
 from .recorded_values import restore_values
+from .recorded_weights import prepare_weights
 from .retirement import RetirementSchedule
 
 _active_stream = ContextVar("ps_active_recorded_stream", default=None)
@@ -76,24 +77,14 @@ class RecordedStream:
             )
         self.dtype = tape.activation_dtype if hasattr(tape, "activation_dtype") else tape.final.dtype
         self.adjoint_dtype = torch.float64 if self.dtype == torch.float64 else torch.float32
-        self.weights = {}
-        for p in self.parameters.values():
-            if p.ndim == 2:
-                stamp = (
-                    p._version,
-                    p.data_ptr(),
-                    getattr(model, "_ps_update_version", 0),
-                )
-                cached = model._weight_cast_cache.get(id(p))
-                if cached is None or cached[0] != stamp:
-                    cached = stamp, p.detach().to(self.dtype)
-                    model._weight_cast_cache[id(p)] = cached
-                self.weights[id(p)] = cached[1]
+        self.weights = prepare_weights(model, self.parameters, self.dtype)
         if self.joint_qkv:
             prepare_qkv_weights(model, self.weights)
         self.versions = tuple(p._version for p in self.parameters.values())
         self.loss = torch.zeros((), device=model.device, dtype=self.adjoint_dtype)
         self.loss_tokens = 0
+        self.score_temperature = getattr(model, "recorded_score_temperature", 1.0)
+        self.loss_denominator = getattr(model, "recorded_loss_denominator", None)
 
     @contextmanager
     def _active(self, policy_version):
@@ -245,14 +236,14 @@ class RecordedStream:
                     logits.to(self.adjoint_dtype),
                 )
                 loss = torch.nn.functional.cross_entropy(
-                    logits.to(self.adjoint_dtype),
+                    logits.to(self.adjoint_dtype) / self.score_temperature,
                     targets[first:].to(self.model.device, non_blocking=True),
                     reduction="sum",
                 )
                 loss.backward()
                 gradient = x.grad
             self.loss.add_(loss.detach())
-            self.loss_tokens += end - start - first
+            self.loss_tokens += int((targets[first:] != -100).sum().item())
             payload["dx"][self.model.depth] = gradient
             if hasattr(self.tape, "release_head"):
                 self.tape.release_head(self.request, start, end)
@@ -520,6 +511,12 @@ class RecordedStream:
         torch.autograd.backward((k, v), (dk.to(k.dtype), dv.to(v.dtype)))
         block.payload["dx"][index].add_(x.grad)
 
+    def normalize_gradients(self):
+        denominator = self.loss_denominator if self.loss_denominator is not None else max(self.loss_tokens, 1)
+        for parameter in self.parameters.values():
+            if parameter.grad is not None:
+                parameter.grad.div_(denominator)
+
     def finish(self, *, policy_version, normalize=True, layerwise=False):
         self._finishing = True
         with self._active(policy_version):
@@ -530,9 +527,7 @@ class RecordedStream:
             else:
                 self.schedule.advance(self._consume, policy_version=policy_version, finished=True)
             if normalize:
-                for parameter in self.parameters.values():
-                    if parameter.grad is not None:
-                        parameter.grad.div_(self.loss_tokens)
+                self.normalize_gradients()
         if self.kv_cache is not None:
             self.kv_cache.clear()
         return self.gradients

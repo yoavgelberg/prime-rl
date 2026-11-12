@@ -1,0 +1,179 @@
+"""Run the released RNG-Bench text game with a local full-context HF policy."""
+import argparse
+import gzip
+import json
+from pathlib import Path
+import re
+import sys
+import time
+import types
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
+
+
+PROMPTED_MEMORY = """You are playing a randomly shuffled Memory Match game. Clear all pairs in as few flips as possible. Each card has one matching partner. Flip one card per response; two successive flips form a pair. Equal cards are removed. Mismatched cards are shown and then turn face down again.
+Coordinates use lowercase row and uppercase column, e.g. aB. [*] is a face-down card; [ ] is a matched/removed slot. Only [*] positions can be selected. Never select the currently revealed first card again.
+Use this strategy:
+1. In Thought, keep an updated list of every revealed UNMATCHED card and its location. Copy these notes forward each turn, incorporate new reveals, and remove both locations when matched. A card turning face down does not erase what you learned about it.
+2. For a first flip, take one card of a known pair if available. Otherwise choose an unseen position.
+3. For a second flip, choose a different known unmatched card with the SAME value whenever one is known. Otherwise choose an unseen position.
+4. Prefer the earliest coordinate when several choices are equally good. The shuffle is random: neighboring positions have no greater chance of matching. Do not keep trying a pair you already know is a mismatch.
+Respond with your notes and move decision, followed by exactly one action:
+Thought: <known unmatched card-location notes; reasoning for this move>
+Action: <coordinate>
+The first observation begins a new independent board with no known cards."""
+
+
+REMEMBER_PAST = """You are playing a randomly shuffled Memory Match game. Clear all pairs in as few flips as possible. Each card has one matching partner. Flip one card per response; two successive flips form a pair. Equal cards are removed. Mismatched cards are shown and then turn face down again.
+Coordinates use lowercase row and uppercase column, e.g. aB. [*] is a face-down card; [ ] is a matched/removed slot. Only [*] positions can be selected. Never select the currently revealed first card again.
+Remember what you tried on previous turns, including the positions and values of cards you revealed. Use that knowledge when choosing the next card. A card turning face down does not erase what you learned about it. All turns belong to the same game.
+Respond with your move decision, followed by exactly one action:
+Thought: <your reasoning or scratch work>
+Action: <coordinate>
+The first observation begins a new independent board with no known cards."""
+
+
+class AnswerLine(StoppingCriteria):
+    def __init__(self, tokenizer, start, thinking, marker='ANSWER'):
+        self.tokenizer, self.start, self.thinking = tokenizer, start, thinking
+        self.pattern = re.compile(r'(?:^|\n)\**'+re.escape(marker)+r'[ \t]+\**\d+\**[ \t]*\n',re.IGNORECASE)
+
+    def __call__(self, input_ids, scores, **kwargs):
+        text = self.tokenizer.decode(input_ids[0,self.start:], skip_special_tokens=True)
+        if self.thinking:
+            if '</think>' not in text:
+                return False
+            text = text.rsplit('</think>',1)[-1]
+        return self.pattern.search(text) is not None
+
+
+class LocalPolicy:
+    def __init__(self, args):
+        self.args = args
+        self.tokenizer = AutoTokenizer.from_pretrained(args.model)
+        self.model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16,
+                                                        attn_implementation='sdpa').to('cuda').eval()
+        self.calls = []
+
+    @torch.inference_mode()
+    def chat(self, messages):
+        text_messages = []
+        for message in messages:
+            content = message['content']
+            if isinstance(content, list):
+                assert all(part['type'] == 'text' for part in content)
+                content = '\n'.join(part['text'] for part in content)
+            text_messages.append(dict(role=message['role'], content=content))
+        inputs = self.tokenizer.apply_chat_template(text_messages, tokenize=True, add_generation_prompt=True,
+                                                    return_tensors='pt').to('cuda')
+        started = time.perf_counter()
+        kwargs = dict(do_sample=self.args.sample, pad_token_id=self.tokenizer.eos_token_id)
+        if getattr(self.args,'unlimited_response',False):
+            kwargs.update(max_new_tokens=None,max_length=self.model.config.max_position_embeddings)
+        else:
+            kwargs['max_new_tokens'] = self.args.max_new_tokens
+        thinking = self.tokenizer.decode(inputs[0,-8:],skip_special_tokens=False).rstrip().endswith('<think>')
+        if getattr(self.args,'stop_at_answer',False):
+            kwargs['stopping_criteria'] = StoppingCriteriaList([AnswerLine(
+                self.tokenizer,inputs.shape[1],thinking,getattr(self.args,'answer_marker','ANSWER'))])
+        if self.args.sample:
+            kwargs.update(temperature=getattr(self.args,'temperature',.6),
+                          top_p=getattr(self.args,'top_p',.95), top_k=getattr(self.args,'top_k',20))
+        output = self.model.generate(inputs, attention_mask=torch.ones_like(inputs), **kwargs)
+        sampled = output[0, inputs.shape[1]:].tolist()
+        text = self.tokenizer.decode(sampled, skip_special_tokens=True)
+        self.calls.append(dict(input_ids=inputs[0].tolist(), sampled_ids=sampled,
+                               seconds=time.perf_counter()-started, output=text,
+                               context_exhausted=bool(getattr(self.args,'unlimited_response',False) and
+                                                      output.shape[1]>=self.model.config.max_position_embeddings)))
+        if thinking:
+            if '</think>' in text:
+                reasoning, content = text.rsplit('</think>',1)
+            else:
+                reasoning, content = text, ''
+            return dict(content=content.strip(), reasoning=reasoning)
+        return dict(content=text, reasoning=None)
+
+
+def run(args):
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.manual_seed(11)
+    source = Path(args.source)
+    lock = json.loads((source/'SOURCE.json').read_text())
+    sys.path.insert(0, str(source/'1_matching_pairs_new'))
+    client = LocalPolicy(args)
+    shim = types.ModuleType('model_presets')
+    shim.make_client = lambda *a, **kw: client
+    shim.parse_grid_size = lambda value: tuple(map(int, value.split('x')))
+    sys.modules['model_presets'] = shim
+    from modes import single_normal
+    if args.action_only:
+        from common import prompts
+        prompts.OUTPUT_FORMAT_NO_COT = '''Output format:
+After thinking, end your final response with exactly one action line:
+Action: <coordinate, e.g. cD>
+'''
+    system_prompt = {'native': None, 'prompted_memory': PROMPTED_MEMORY,
+                     'remember_past': REMEMBER_PAST}[args.strategy]
+    if system_prompt is not None:
+        single_normal.build_single_system = lambda *a,**kw: system_prompt
+    run_one_game = single_normal.run_one_game
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    metadata = dict(model=args.model, upstream=lock, rows=args.rows, cols=args.cols,
+                    max_responses_per_pair=None if args.unbounded else 5, max_retries=2,
+                    max_new_tokens=None if args.unlimited_response else args.max_new_tokens,
+                    strategy=args.strategy, unlimited_response=args.unlimited_response,
+                    action_only=args.action_only, start_seed=args.start_seed,
+                    prompted_memory_strategy=args.strategy=='prompted_memory',
+                    system_prompt=system_prompt,
+                    sample=args.sample, temperature=args.temperature if args.sample else 0., full_context=True,
+                    top_p=args.top_p if args.sample else None, top_k=args.top_k if args.sample else None,
+                    text_transport='Native text content parts joined with newlines; local HF generation',
+                    scope='Task-qualification diagnostic, not a reproduction of published model scores')
+    (output/'config.json').write_text(json.dumps(metadata, indent=2))
+    rows = []
+    for seed in range(args.start_seed, args.start_seed+args.count):
+        client.calls = []
+        result = run_one_game(model='local', rows=args.rows, cols=args.cols, num_cards=None,
+                              seed=seed, render='text', theme=None, assets_dir=str(source/'1_matching_pairs_new/assets'),
+                              cell_size=64, out_dir=output/f'seed-{seed}',
+                              max_responses=sys.maxsize if args.unbounded else 5*args.rows*args.cols//2,
+                              max_retries=2, cot_enabled=not args.action_only)
+        assert result.get('error') is None, result
+        with gzip.open(output/f'seed-{seed}-tokens.json.gz', 'wt') as handle:
+            json.dump(client.calls, handle)
+        row = dict(seed=seed, **result, matched_fraction=result['score']/result['total_pairs'],
+                   generated_tokens=sum(len(c['sampled_ids']) for c in client.calls),
+                   inference_seconds=sum(c['seconds'] for c in client.calls))
+        rows.append(row)
+        (output/'summary.json').write_text(json.dumps(dict(episodes=len(rows),
+            mean_matched_fraction=sum(r['matched_fraction'] for r in rows)/len(rows),
+            completion_rate=sum(r['done'] for r in rows)/len(rows), episodes_detail=rows), indent=2))
+        print(json.dumps(row), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', required=True)
+    parser.add_argument('--source', required=True)
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--rows', type=int, default=4)
+    parser.add_argument('--cols', type=int, default=4)
+    parser.add_argument('--count', type=int, default=4)
+    parser.add_argument('--start-seed', type=int, default=1_000_000)
+    parser.add_argument('--max-new-tokens', type=int, default=512)
+    parser.add_argument('--sample', action='store_true')
+    parser.add_argument('--temperature', type=float, default=.7)
+    parser.add_argument('--top-p', type=float, default=.8)
+    parser.add_argument('--top-k', type=int, default=20)
+    parser.add_argument('--unbounded', action='store_true')
+    parser.add_argument('--unlimited-response', action='store_true')
+    parser.add_argument('--action-only', action='store_true')
+    parser.add_argument('--strategy', choices=['native','prompted_memory','remember_past'],default='native')
+    run(parser.parse_args())
+
+
+if __name__ == '__main__':
+    main()

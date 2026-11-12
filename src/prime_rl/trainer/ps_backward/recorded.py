@@ -78,8 +78,9 @@ def recorded_add(left, right, output):
 
 class _RecordedRMS(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, inputs, weight, output, epsilon):
-        ctx.save_for_backward(inputs, weight)
+    def forward(ctx, inputs, weight, output, epsilon, compute_weight):
+        ctx.save_for_backward(inputs, compute_weight)
+        ctx.weight_dtype = weight.dtype
         ctx.epsilon = epsilon
         ctx.fused = _fused_pointwise(inputs)
         return output.detach()
@@ -91,18 +92,19 @@ class _RecordedRMS(torch.autograd.Function):
             from .recorded_pointwise import rms_backward
 
             dx, dw = rms_backward(inputs, gradient, weight, ctx.epsilon)
-            return dx, dw, None, None
+            return dx, dw.to(ctx.weight_dtype), None, None, None
         dtype = torch.float64 if inputs.dtype == torch.float64 else torch.float32
         x, dy, w = inputs.to(dtype), gradient.to(dtype), weight.to(dtype)
         rstd = (x.square().mean(-1, keepdim=True) + ctx.epsilon).rsqrt()
         normalized, weighted = x * rstd, dy * w
         dx = rstd * (weighted - normalized * (weighted * normalized).mean(-1, keepdim=True))
         dw = (dy * normalized).sum(tuple(range(inputs.ndim - 1)))
-        return dx.to(inputs.dtype), dw.to(weight.dtype), None, None
+        return dx.to(inputs.dtype), dw.to(ctx.weight_dtype), None, None, None
 
 
 def recorded_rms(inputs, module, output):
-    return _RecordedRMS.apply(inputs, module.weight, output, module.variance_epsilon)
+    compute_weight = getattr(module, "_ps_recorded_compute_weight", module.weight)
+    return _RecordedRMS.apply(inputs, module.weight, output, module.variance_epsilon, compute_weight)
 
 
 class _RecordedRope(torch.autograd.Function):
