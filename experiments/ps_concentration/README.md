@@ -1,57 +1,121 @@
-# Native Concentration memory RL
+# Matching Pairs memory RL
 
-**Current experiment:** native RNG-Bench Matching Pairs 4×4 with Qwen3-4B-Thinking, PS-only GRPO, independent native vLLM actors, and a joint FA4 prefix-sliding learner pass for policy loss, KL, and entropy. Use [the hero v2 protocol](HERO_V2_RUN.md). [OVERLAP_RUN.md](OVERLAP_RUN.md) describes the stopped earlier run with backward during generation. The POPGym/Instruct commands and results below describe the original implementation.
+This experiment tests whether outcome RL teaches a language model with bounded attention to preserve useful board state in its generated thinking. The completed experiment uses **native RNG-Bench textual Matching Pairs**, Qwen3-4B-Thinking-2507, and full-parameter PS-GRPO. The directory retains its historical `ps_concentration` name. The original 52-card POPGym/Instruct implementation is documented separately in [POPGYM.md](POPGYM.md).
 
-The current W1024/W512 continuation forks the common full update192 state and trains to fixed update320, switching both arms to exact vocabulary KL from update215. See [the extension protocol and fresh-evaluation CLI](HERO_EXTENSION_RUN.md) for the preserved optimizer/RNG state, warmup, fresh board splits, intervention controls, and deferred reporting.
+## Game and model
 
-This experiment tests outcome-based adaptation to a fixed system prefix and bounded rolling attention. The neutral prompt permits scratch work but supplies no note format, examples, memory tools, or note-writing reward. Native observations, rewards, action-0 format fallback and transient mismatch observations are preserved.
+A 4×4 board has 16 initially hidden cards, eight distinct values, and two copies of each value. Each assistant response selects one card using `Action: cD`. Two successive valid flips form a pair; matching cards are removed, and mismatches are shown before becoming hidden again. A game ends when all eight pairs are found or after 96 attempted responses. Native observations and invalid-action handling are retained. One response is one card attempt, not a complete two-card round.
 
-Run from the repository root with `PYTHONPATH=src:.` and the captured environment active. The commands are also runnable through `uv run --active --no-sync` in that environment.
+The pinned model and tokenizer revision is `768f209d9ea81521153ed38c47d515654e938aea` of `Qwen/Qwen3-4B-Thinking-2507`. The pinned [RNG-Bench](https://github.com/InternLM/RNGBench) revision is `e3d195e857727dfa3d4a96561be202098d67da83`. The system prompt specifies the game, answer format, and thinking budget. It supplies no memory strategy, notebook format, memory examples, or reward for writing notes.
+
+Only the initial system message and fixed template delimiters are pinned (439 tokens with this tokenizer). At absolute query position `i`, attention can use causal prefix keys `j < P` and rolling keys `max(P, i-W+1) <= j <= i`, with `W=1024`. Position IDs keep increasing. Actors retain streaming KV between turns. They never rebuild a cropped transcript. Learners process the full episode with the same attention mask and all backward dependencies.
+
+## Training recipe
+
+| Setting | Parent run |
+| --- | --- |
+| Batch | 16 boards × 8 independent trajectories = 128 games/update |
+| Training seed | 11; fixed permutation of seeds 0–999999 |
+| Sampling | Temperature 0.6, top-p 1, no top-k cutoff |
+| Per response | 128 sampled thinking tokens; up to 32 sampled answer tokens |
+| Forced transition at thinking cap | `\n\nOkay, time to give the answer.</think>\n\n` |
+| Optimizer | AdamW, LR 2e-6, betas (0.9, 0.95), epsilon 1e-8, weight decay 0 |
+| Schedule | Eight-update warmup; cosine to 20% of peak at update 128 |
+| Gradient clipping | Global norm 1 |
+| GRPO | Within-board mean and sample standard deviation; epsilon 1e-4 |
+| Policy ratio clipping | [0.8, 1.2], using stored native actor log probabilities |
+| Regularization | Reference KL coefficient 0.01; entropy coefficient 0.001 |
+| Loss normalization | Fixed denominator 26,624 per trajectory, averaged over 128 |
+| Update rule | One fresh batch, one optimizer step; no rollout reuse across updates |
+
+The reward is `pairs/8 - responses/96 - 0.02*format_errors - 0.02*invalid_actions`. Format and native invalid-action counters are disjoint. The historical metric `avg_native_reward` means `pairs/8 - responses/96`; the native game's actual score is pairs found. Every sampled assistant token, including early thinking and sampled EOS, receives the episode advantage. Inserted transitions, environment observations, and role delimiters have zero direct loss while remaining differentiable context.
+
+The exact loss and original protocol are in [HERO_V2_RUN.md](HERO_V2_RUN.md). The full W1024 lineage comprises updates 1–128 (parent), 129–192 (continuation), 193–320 (extension), and 321–1600 (long continuation). The extension warms LR from 4e-7 to 1e-6 over eight updates and then keeps it constant. Exact categorical `KL(policy || reference)` replaces sampled K3 at update 215. Temperature rises to 0.8 after update 320. The reference remains the original starting checkpoint. These are changes within one evolving seed, not independent training runs. [Extension protocol](HERO_EXTENSION_RUN.md), [post-320 protocol](HERO_POST320_RUN.md).
+
+## Runtime and setup
+
+The final training path uses independent native vLLM actors and joint FA4-PS learner passes for policy loss, KL, and entropy, plus a frozen-reference forward. It does **not** reuse generation-time streaming gradients. The earlier streaming-gradient implementation remains available under [OVERLAP_RUN.md](OVERLAP_RUN.md).
+
+Eight B200s use four actors and four replicated learners, with 32 concurrent games per actor. Four B200s use two actors and two learners, with 64 games per actor. Both layouts retain batch 128, group size eight, the same loss denominator, and gradient accumulation before a single synchronized step. Finished board groups train while other groups are still generating; weights stay fixed until the batch barrier.
+
+Use Python 3.12 and the project's PS-enabled vLLM and FA4 runtime. [locks/hero-extension-runtime-packages.lock.txt](locks/hero-extension-runtime-packages.lock.txt) records observed package versions, and [locks/hero-post320-runtime-revisions.json](locks/hero-post320-runtime-revisions.json) records model/game/runtime identities. These captures document custom providers as well as installed packages; installing stock wheels from the version list alone does not reconstruct the deployed vLLM overlay. Use the existing qualified runtime for GPU execution. CPU checks can use ordinary CPU PyTorch.
+
+The commands below assume the runtime is active and this repository is on `PYTHONPATH`:
 
 ```bash
-python -m experiments.ps_concentration.audit
-python -m experiments.ps_concentration.baselines --split screening
-python -m experiments.ps_concentration.train --attention full --seed 11 --updates 32
-python -m experiments.ps_concentration.train --attention ps --seed 11 --updates 32
-python -m experiments.ps_concentration.evaluate --checkpoint CHECKPOINT --split test
-python -m experiments.ps_concentration.intervene --checkpoint CHECKPOINT
-python -m experiments.ps_concentration.report --run-dir RUN_DIR
+export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export VLLM_WORKER_MULTIPROC_METHOD=spawn VLLM_USE_V1=1
+export OMP_NUM_THREADS=2 CUBLAS_WORKSPACE_CONFIG=:4096:8
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export WANDB_ENTITY=YOUR_ENTITY WANDB_PROJECT=ps-memory
 ```
 
-The default public model name is only a convenience. Actual runs must pass the exact snapshot path recorded in `locks/revisions.json`. The model and tokenizer revision are `cdbee75f17c01a7cc42f958dc650907174af0554`. No thinking tokens or RoPE changes are used. The system prefix is 152 tokens for the neutral 52-card prompt. The conservative UTF-8 byte bound raises the common 52-card transcript cap from 65,536 to 73,203; the larger-board bound fits 262,144. See the saved tokenizer audit for the arithmetic and any later stricter bound.
-
-`locks/` contains the complete observed CPU and GPU package versions. The runtime was staged from a byte-verified portable environment and two pure-Python wheels (`popgym==1.0.7`, `gymnasium==1.0.0`). Captures and manifests live under the workspace's `artifacts/ps-concentration/`; remote source captures and run receipts live under `/hai/scratch/gelberg/ps/concentration/`. Local CPU calibration and GPU results are separate receipts. The native environment source SHA256 must match the specification before comparisons.
-
-Rollout uses a persistent KV ring with original increasing positions. It never recomputes only the retained context between game turns. The controller's complete history is used only for logs and offline diagnostics. Every call begins with fresh episode caches. Episodes are never packed together; independent batch lanes have independent KV. Only system-template prefix tokens are pinned. Role delimiters and environment tokens have zero direct loss.
-
-Training reuses the repository's Qwen adapter, exact FA4 prefix/window mask and checkpointed full-episode graph. It includes every sampled scratch/action token, including early scratch before the first eviction; no cache detachment is used. Sequences are padded only after their final sampled token to a 1,024-token allocation boundary, with no loss on padding and no effect on preceding causal queries. This reduces shape-dependent compilation. Linear tensor-core operations use BF16 operands, with FP32 projection outputs, residuals, master weights, gradient accumulation and Adam state. The arithmetic is shared by both arms and reference policies and must pass the saved streaming/training parity audit; Policy checkpoints retain the exact effective forward values: BF16 projection operands and FP32 embeddings, normalization weights and biases. Full unrounded FP32 masters and Adam state remain in the resume checkpoint. A save/reload equivalence check verifies the effective policy.
-
-On eight 180-GB B200 GPUs, launch eight synchronous processes that each use their GPU for rollout and then training:
+Download the pinned Hugging Face snapshot into a directory whose final component is its revision hash. Prepare the native source from a fresh checkout; only its game files are included in the source manifest:
 
 ```bash
-python -m torch.distributed.run --standalone --nproc_per_node=8 \
-  -m experiments.ps_concentration.train --attention ps --seed 11 --updates 32 \
-  --model EXACT_SNAPSHOT --window FROZEN_W --output RUN_DIR
+git clone https://github.com/InternLM/RNGBench.git /path/to/RNGBench
+git -C /path/to/RNGBench checkout e3d195e857727dfa3d4a96561be202098d67da83
+uv run --active --no-sync python - /path/to/RNGBench <<'PY'
+import hashlib, json, subprocess, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+assert revision == "e3d195e857727dfa3d4a96561be202098d67da83"
+subprocess.run(["git", "-C", str(root), "diff", "--exit-code", "HEAD", "--", "1_matching_pairs_new"], check=True)
+paths = subprocess.check_output(["git", "-C", str(root), "ls-files", "1_matching_pairs_new"], text=True).splitlines()
+assert paths
+manifest = [{"path": p, "sha256": hashlib.sha256((root / p).read_bytes()).hexdigest()} for p in paths]
+(root / "SOURCE.json").write_text(json.dumps({"commit": revision, "manifest": manifest}, indent=2) + "\n")
+PY
 ```
 
-Each of eight processes receives one board and eight trajectories, then accumulates eight complete-episode gradients. Four-GPU pilots receive two boards per process. FP32 master gradients are summed across workers before clipping and one AdamW update. Colocating rollout and training lets all allocated GPUs work in both synchronous phases. This is replicated data parallelism with activation checkpointing: the larger B200 VRAM permits avoiding FSDP communication. The global trajectory count and objective are unchanged. Use `--separate-actors` with four processes to select the original four-trainer/four-actor layout. A single-GPU smoke uses the same 64-trajectory global update. Throughput and memory must be measured, not inferred from this layout.
+Capture the **experiment implementation** independently with `git archive --format=tar.gz HEAD > /path/to/implementation.tar.gz`, and compute its SHA256 with `sha256sum`. The `--source` argument below identifies the native game; `--source-sha256` identifies that implementation archive. Run the captured clean implementation for corresponding provenance.
 
-The loss is `sum(-A*logp + 0.01*k3)/(26624*64)`, with leave-one-out episodic-return advantages and no standard-deviation normalization. Here `k3=exp(logp_ref-logp_policy)-(logp_ref-logp_policy)-1`, the same algebra as the established trainer's nonnegative sampled mismatch estimator, applied to the frozen same-attention reference. Log probabilities use temperature-adjusted logits before top-p truncation, following the existing rollout/trainer convention; sampling uses temperature 0.8 and top-p 0.95. This convention is recorded explicitly rather than claiming an exact likelihood for the truncated sampling distribution. Report both normalized KL and KL per generated token.
+## Launch and resume
 
-Checkpoint selection uses validation return under training attention, with earlier ties retained. `latest_optimizer.pt` includes FP32 masters, Adam state, update index, best checkpoint and RNG state. Resume with `--resume RUN_DIR/latest_optimizer.pt`; `--updates 256` means 256 total updates. Board permutations and generation RNG derivation are fixed independently of attention. Main runs use seeds 11, 22 and 33.
+Prepare the original 128-update W1024 parent recipe without GPUs:
 
-The user authorized skipping Full RL if the neutral original full-context model already meets the 80% competence threshold. In that case the comparator is the untrained original under PS, and the report must state that rule/format learning is not matched. The user also authorized exploratory continuation for marginal performance-gate misses; record the original GO/HOLD values and any exploratory designation. Major correctness problems are not performance gate exceptions.
+```bash
+uv run --active --no-sync python -m experiments.ps_concentration.launch \
+  --model /path/to/768f209d9ea81521153ed38c47d515654e938aea \
+  --source /path/to/RNGBench --source-sha256 IMPLEMENTATION_ARCHIVE_SHA256 \
+  --output /path/to/runs/ps-memory --node-dir /node/local/ps-memory/control \
+  --deadline ALLOCATION_END_UNIX_SECONDS --gpus 8 --wandb-id UNIQUE_RUN_ID \
+  --prepare-only
+```
 
-Interventions recognize explicit position-rank scratch associations conservatively and log the exact spans. They edit only assistant scratch token IDs, preserve length and pinned prefix, compare three identical cold rebuild procedures, and separately clone the ordinary streaming cache. All qualified states, including states for which a sham cannot be constructed, are counted. There is no textual-memory conclusion with fewer than 32 tested qualified states. Irregular note formats require manual review; the automatic recognizer is not a universal memory detector.
+This writes `launch-config.json`, verifies the native file hashes, and preserves an existing configuration if it matches. Remove `--prepare-only` to launch inside an assigned regular `yejin` allocation. Use `--gpus 4` for the same ML recipe on four B200s. `CUDA_VISIBLE_DEVICES` must expose exactly the assigned devices. A new process group is created for each worker, and termination uses the same cleanup path as the direct training CLI.
 
-Reports are generated from saved records and include CSV/JSON tables, PNG figures and an HTML artifact. Bootstrap intervals resample boards within each training seed; variation across training seeds is reported separately. Provisional numerical probes and incomplete screening runs are not final test results.
+The underlying CLI remains available for recorded continuation configurations:
 
-CUDA graphs replay persistent-cache decoder operations; both PS and full-cache boundary checks reproduce eager logits and cache values exactly. Full decode uses the installed FA4 kernel with a dynamic causal-length mask, avoiding masked-SDPA fallback. Enable with `PS_CONCENTRATION_GRAPHS=1`.
+```bash
+uv run --active --no-sync python -m experiments.ps_concentration.hero_v2 --config /path/to/launch-config.json
+```
 
-Initial fresh long-trajectory parity measured mean absolute log-probability error .00610 and p99 .06437: the mean passes and p99 misses the .05 target. The system smoke measured .00675/.06527. These target misses remain explicit HOLD receipts. The user permits exploration for marginal gates, so `--allow-numerical-target-miss` permits pilots only within documented investigation bounds (mean <= .02, p99 <= .15); it does not relabel the original target as passed. No major correctness, nonfinite-gradient, immutable-prefix or cache-boundary failure is waived.
+Resume with the saved configuration, a fresh node-local control directory, and the new allocation deadline/GPU count. Keep the same run directory and W&B ID. The runner restores `checkpoints/latest.pt` (model, Adam, and all-rank RNG) and verifies the saved identity. Source changes require explicit reviewed migration digests; it never silently resumes from an earlier optimizer state. Continuation/fork helpers preserve the same checks. Checkpoint frequency is configured with `checkpoint_interval` and `export_interval`; the last W1024 continuation used 64-update boundaries and saves at a requested final stop as well.
 
-HAIC scratch had 604 GB free at setup, so selected and latest policy binaries are retained with metadata for every scheduled checkpoint; unselected older binaries are retired only after a complete replacement and optimizer receipt exist. Full training token logs and resume state are preserved. Retired checkpoint directories record this explicitly. Bulk artifacts stay on HAIC or local `/tmp`; the workspace home had less than 1 GB free.
+Runtime output includes complete compressed token/role/loss/position/log-probability records, board permutations and generation seeds, update metrics, W&B metrics, and checkpoint metadata. Keep outputs in `outputs/`, `runs/`, or another external directory; they are ignored by Git. Credentials belong in the runtime environment, never in configuration or source control.
 
-The H200 fallback uses six full-attention rollout lanes per GPU (eight for PS); B200 uses eight. Both retain global batch64 and the same episode/optimizer rules. H200 pilots can hand off at a complete optimizer update to the eight-B200 main allocation. An allocation lease keeps GPUs across worker failures, and a shared lock prevents two controllers from updating the same run concurrently.
+## Code map and validation
 
-An optional queued-token path (`PS_CONCENTRATION_PREFILL_TOKENS=32`) ingests known transcript tokens in blocks through the existing exact FA4 mask while preserving the streaming cache. It is disabled by default. `python -m experiments.ps_concentration.prefill_check --model EXACT_SNAPSHOT --output RECEIPT` checks PS eviction, immutable prefix, full-cache growth and cached timings; fresh rollout/training parity is still required before enabling it. It never skips sampled losses or rebuilds from a cropped history.
+| Module | Purpose |
+| --- | --- |
+| `hero_config.py`, `launch.py` | Shared recipe and portable parent configuration/launch |
+| `hero_v2.py` | Synchronous actor/learner coordination, checkpointing, W&B |
+| `hero_objective.py`, `native_teacher.py` | Masked GRPO, KL, entropy, full-episode backward |
+| `rng_vllm.py`, `hero_inference.py` | Native game adapter and actor weight updates |
+| `hero_continue.py`, `hero_extension.py` | State-preserving continuations |
+| `hero_memory.py`, `rng_memory_metrics.py` | Opportunity-normalized recall and note diagnostics |
+| `rng_intervene.py`, `rng_intervention_states.py` | Controlled edits and matched cold-cache branches |
+| `hero_budget_final.py`, `hero_post320_report.py` | Frozen final evaluations and saved-metric reports |
+
+Run CPU regression tests without allocating GPUs:
+
+```bash
+export PS_CONCENTRATION_NATIVE_SOURCE=/path/to/RNGBench
+uv run --active --no-sync python -m pytest experiments/ps_concentration -q
+```
+
+The native-source variable enables the nine logging checks against the pinned game implementation. Archive checks also require the `zstd` executable.
+
+GPU numerical and performance audits require the qualified runtime and separate resources. Exact PS dependency structure does not establish floating-point identity between vLLM and the teacher: strict actor/learner log-probability parity remains unresolved. CPU regression tests do not resolve that limitation or establish GPU performance.

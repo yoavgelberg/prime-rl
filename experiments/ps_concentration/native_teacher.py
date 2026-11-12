@@ -27,15 +27,18 @@ class NativeTeacher(ConcentrationQwen):
         return effective_bf16(super().linear(inputs, weight, bias))
 
     def attention(self, q, k, v, indices, prefix_length, plan):
-        return ps_attention(q.bfloat16(), k.bfloat16(), v.bfloat16(),
-                            indices, indices, prefix_length, self.window, self.backend, plan)
+        return ps_attention(
+            q.bfloat16(), k.bfloat16(), v.bfloat16(), indices, indices, prefix_length, self.window, self.backend, plan
+        )
 
     def _layer(self, layer, hidden, cos, sin, indices, prefix_length, plan):
         normalized = native_rms(hidden, layer.input_layernorm)
         residual = effective_bf16(hidden)
         attn, count = layer.self_attn, hidden.shape[1]
-        q, k, v = [self.project(proj, normalized).view(1, count, -1, attn.head_dim)
-                   for proj in (attn.q_proj, attn.k_proj, attn.v_proj)]
+        q, k, v = [
+            self.project(proj, normalized).view(1, count, -1, attn.head_dim)
+            for proj in (attn.q_proj, attn.k_proj, attn.v_proj)
+        ]
         q, k = native_rms(q, attn.q_norm), native_rms(k, attn.k_norm)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         q = effective_bf16(q * cos + rotate_half(q) * sin)
@@ -50,20 +53,23 @@ class NativeTeacher(ConcentrationQwen):
 
     def segment(self, ids, positions, indices, prefix_length, *, coordinate_gap=None):
         if ids.ndim != 1 or not ids.numel():
-            raise ValueError('A segment requires nonempty one-dimensional token IDs')
+            raise ValueError("A segment requires nonempty one-dimensional token IDs")
         hidden = effective_bf16(self.base.model.embed_tokens(ids.unsqueeze(0)))
         cos, sin = self.base.model.rotary_emb(hidden, positions.unsqueeze(0))
         cos, sin = effective_bf16(cos).unsqueeze(1), effective_bf16(sin).unsqueeze(1)
         plan = None
-        if self.backend == 'fa4':
+        if self.backend == "fa4":
             from prime_rl.trainer.ps_backward.fa4 import sparse_ps_plan
+
             block = 128 if torch.cuda.get_device_capability(hidden.device)[0] == 9 else 256
             plan = sparse_ps_plan(indices, indices, prefix_length, self.window, (block, 128))
             if coordinate_gap is not None:
                 plan = replace(plan, coordinate_gap=coordinate_gap)
         for index, layer in enumerate(self.base.model.layers):
+
             def run(value, c, s, layer=layer):
                 return self._layer(layer, value, c, s, indices, prefix_length, plan)
+
             if self.checkpoint_layers and index < self.depth - self.retain_last_layers and torch.is_grad_enabled():
                 hidden = checkpoint(run, hidden, cos, sin, use_reentrant=False)
             else:
